@@ -108,8 +108,14 @@ _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded
 # "this toolkit's config" -- but the loader took THAT file from $X4_CONFIG, which the shell
 # inherits like any other variable: naming another toolkit's config made the unpack write (and
 # protect) THAT toolkit's tree, and naming a missing file read no config at all, so nothing
-# was compared. Refuse unless --reference chose the tree explicitly.
-if [ -n "${X4_CONFIG:-}" ] && [ -z "$EXPLICIT_REF" ]; then
+# was compared. Refuse.
+#
+# NO FLAG LIFTS IT (FX-B4, reviewer I; as x4lock's config_lifted_by_flags=False). --reference
+# did, but the foreign config still supplied X4_GAME and X4_APPMANIFEST: the chosen tree was
+# filled from THE OTHER game and this toolkit's .claude/.reference-buildid recorded THAT
+# game's build. The unpack also reads X4_XRCAT, X4_PYTHON, X4_REFGUARD_SCRIPT,
+# X4_UNPACK_FLOOR and X4_FORCE_UNPACK from whatever config is loaded, with no flag for any.
+if [ -n "${X4_CONFIG:-}" ]; then
   _x4_cfg_in=0
   # FX-B4: judge the file the loader READ (`_x4_cfg`, its normalized spelling of X4_CONFIG),
   # not the raw string -- `-f "x4-paths.env/"` said "does not exist" for a file Python reads.
@@ -120,8 +126,9 @@ if [ -n "${X4_CONFIG:-}" ] && [ -z "$EXPLICIT_REF" ]; then
     if [ -n "${_x4_cfg:-}" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
     echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_CONFIG ($X4_CONFIG) $_x4_why. Nothing was changed." >&2
     echo "  acting toolkit: $ACT_TK" >&2
-    echo "  Unset X4_CONFIG in this shell to use this toolkit's config, or choose the tree explicitly:" >&2
-    echo "    bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference DIR" >&2
+    echo "  No flag lifts this: the config would still supply the game, its build id and more." >&2
+    echo "  Unset X4_CONFIG in this shell (or point it at this toolkit's x4-paths.env), then:" >&2
+    echo "    bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\"" >&2
     exit 2
   fi
 fi

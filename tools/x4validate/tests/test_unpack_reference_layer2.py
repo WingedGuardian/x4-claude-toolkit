@@ -282,14 +282,14 @@ def test_B2_a_FOREIGN_X4_TOOLKIT_without_toolkit_REFUSES_before_writing(tmp_path
 
 def test_B2_TWIN_X4_TOOLKIT_naming_this_toolkit_is_not_refused(tmp_path):
     ref = tmp_path / "reference"
-    # FX-B2 (reviewer C): pin the config. X4_TOOLKIT=REPO made the loader read the CHECKOUT's
-    # own x4-paths.env -- on a developer machine, a real one.
-    cfg = tmp_path / "pinned.env"
-    cfg.write_text('X4_REFERENCE="%s"\n' % ref.as_posix(), encoding="utf-8")
-    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG=str(cfg))
+    # FX-B2 (reviewer C): X4_TOOLKIT=REPO makes the loader read the CHECKOUT's own
+    # x4-paths.env -- on a developer machine, a real one. FX-B4: a pinned X4_CONFIG outside
+    # the toolkit is now refused whatever the flags, so instead EVERY key the unpack reads is
+    # pinned in the environment, which outranks any config (X4_CONFIG="" = no override).
+    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG="",
+               X4_APPMANIFEST=str(tmp_path / "no-manifest.acf"), X4_FORCE_UNPACK="0",
+               X4_REFGUARD_SCRIPT=str(GUARD), X4_PYTHON=sys.executable)
     try:
-        # FX-B3: an X4_CONFIG outside the acting toolkit now refuses unless --reference
-        # chooses the tree -- so the pin is paired with the explicit choice it needs.
         r = _run(env, ref, "--reference", str(ref), explicit=False)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "--toolkit" not in r.stderr, r.stderr
@@ -392,7 +392,8 @@ def test_FXB3_an_X4_CONFIG_OUTSIDE_the_toolkit_REFUSES_and_writes_nothing(tmp_pa
                         "--toolkit", env["X4_TOOLKIT"]], env=env, capture_output=True,
                        text=True, errors="replace")
     assert r.returncode == 2, r.stdout + r.stderr
-    assert "X4_CONFIG" in r.stderr and "OUTSIDE" in r.stderr and "--reference" in r.stderr, r.stderr
+    # FX-B4: the way out is clearing X4_CONFIG; --reference no longer lifts it (see below).
+    assert "X4_CONFIG" in r.stderr and "OUTSIDE" in r.stderr and "Unset X4_CONFIG" in r.stderr, r.stderr
     assert not other.exists() and not ref.exists(), "it unpacked anyway"
 
 
@@ -417,14 +418,68 @@ def test_FXB3_TWIN_X4_CONFIG_naming_the_toolkit_s_OWN_config_proceeds(tmp_path):
         _unprotect(tmp_path, ref)
 
 
-def test_FXB3_TWIN_reference_lifts_the_X4_CONFIG_refusal(tmp_path):
+def test_FXB4_reference_does_NOT_lift_the_X4_CONFIG_refusal_the_config_still_supplies_the_game(tmp_path):
+    """Reviewer I: `--reference R` lifted the refusal, but the foreign config still supplied
+    X4_GAME and X4_APPMANIFEST -- so R was filled from THE OTHER game and this toolkit's
+    .claude/.reference-buildid recorded THAT game's build. The unpack also reads X4_XRCAT,
+    X4_PYTHON, X4_REFGUARD_SCRIPT, X4_UNPACK_FLOOR and X4_FORCE_UNPACK from whatever config
+    is loaded, and has no flag for any of them -- so no flag can lift it (as x4lock:
+    config_lifted_by_flags=False)."""
+    ref = tmp_path / "reference"
+    tk = _tk_with_config(tmp_path, ref)
+    theirs = tmp_path / "their-game"
+    theirs.mkdir()
+    (theirs / "01.cat").write_text("")
+    acf = tmp_path / "their-appmanifest.acf"
+    acf.write_text('"AppState"\n{\n\t"buildid"\t\t"999"\n}\n', encoding="utf-8")
+    cfg = tmp_path / "elsewhere" / "x4-paths.env"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('X4_GAME="%s"\nX4_APPMANIFEST="%s"\n' % (theirs.as_posix(), acf.as_posix()),
+                   encoding="utf-8")
+    env = _env(tmp_path, ref, X4_CONFIG=str(cfg))
+    env.pop("X4_GAME")                         # the game comes from the foreign config
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 2 and "X4_CONFIG" in r.stderr, r.stdout + r.stderr
+        assert not ref.exists(), "it unpacked the OTHER game into the chosen tree"
+        assert not (tk / ".claude" / ".reference-buildid").exists(), "it recorded THEIR build id"
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_the_X4_CONFIG_refusal_names_no_flag_that_cannot_lift_it(tmp_path):
     ref, other = tmp_path / "reference", tmp_path / "theirs"
     _tk_with_config(tmp_path, ref)
     env = _env(tmp_path, ref, X4_CONFIG=str(_foreign_cfg(tmp_path, other)))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2 and "X4_CONFIG" in r.stderr, r.stdout + r.stderr
+    assert "--reference" not in r.stderr, r.stderr
+    assert "unset X4_CONFIG" in r.stderr.lower() or "Unset X4_CONFIG" in r.stderr, r.stderr
+
+
+def test_FXB4_TWIN_reference_with_X4_CONFIG_UNSET_proceeds(tmp_path):
+    """The way out the refusal names: clear X4_CONFIG and --reference still chooses the tree."""
+    ref = tmp_path / "reference"
+    _tk_with_config(tmp_path, tmp_path / "configured")
+    env = _env(tmp_path, ref)
+    env.pop("X4_REFERENCE")
     try:
         r = _run(env, ref, "--reference", str(ref), explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert (ref / "libraries" / "f1.xml").exists() and not other.exists()
+        assert (ref / "libraries" / "f1.xml").exists()
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_TWIN_reference_with_X4_CONFIG_naming_the_OWN_config_proceeds(tmp_path):
+    ref = tmp_path / "reference"
+    tk = _tk_with_config(tmp_path, tmp_path / "configured")
+    env = _env(tmp_path, ref, X4_CONFIG=str(tk / "x4-paths.env"))
+    env.pop("X4_REFERENCE")
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (ref / "libraries" / "f1.xml").exists()
     finally:
         _unprotect(tmp_path, ref)
 
