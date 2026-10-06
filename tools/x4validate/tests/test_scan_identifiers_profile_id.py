@@ -146,3 +146,35 @@ def test_the_selftest_covers_the_bare_id_both_ways():
                        text=True, timeout=120)
     assert r.returncode == 0, r.stdout
     assert "DERIVED profile id" in r.stdout and "unrelated 8-digit" in r.stdout
+
+
+# --- FX-G3 (v4.0.0 delta review): EVERY occurrence on a line, not the first ------------------- #
+# account_match used `search`, so a placeholder EARLIER on a line hid a real identifier LATER on
+# the same line. MEASURED before the fix: account_match(...) -> None. Names are ASSEMBLED.
+REAL_USER = "dev" + "user"
+
+
+def test_a_placeholder_EARLIER_on_the_line_does_not_hide_a_real_user_path_LATER(tmp_path):
+    repo = _repo(tmp_path, "cp C:/Users/tester/a C:/Users/%s/Desktop/b\n" % REAL_USER)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 1 and "a.txt" in r.stdout, r.stdout + r.stderr
+
+
+def test_a_placeholder_profile_id_EARLIER_does_not_hide_a_real_one_LATER(tmp_path):
+    repo = _repo(tmp_path, "Egosoft/X4/12345678 vs Egosoft/X4/%s\n" % OTHER)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 1 and "a.txt" in r.stdout, r.stdout + r.stderr
+
+
+def test_TWIN_two_placeholders_on_one_line_are_still_clean(tmp_path):
+    repo = _repo(tmp_path, "cp C:/Users/tester/a C:/Users/youruser/b Egosoft/X4/12345678\n")
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_TWIN_the_real_path_ALONE_is_caught_too(tmp_path):
+    """Control: without the placeholder in front, the same line was caught before the fix as well --
+    so the two tests above fail ONLY because of what precedes the identifier."""
+    repo = _repo(tmp_path, "cp C:/Users/%s/Desktop/b\n" % REAL_USER)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 1, r.stdout + r.stderr
