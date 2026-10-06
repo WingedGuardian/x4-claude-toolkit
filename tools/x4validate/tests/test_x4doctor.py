@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -447,7 +448,7 @@ def test_a_GENERIC_only_root_has_no_guard_toolchain_and_says_so(tmp_path, monkey
     for name in _LEAKY:
         monkeypatch.delenv(name, raising=False)
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
-    rows = {r.id: r for r in doc.check_toolchain(doc.Ctx(root=tmp_path))}
+    rows = {r.id: r for r in doc.check_toolchain(doc.Ctx(root=tmp_path, toolkit=tmp_path))}
     assert {r.status for r in rows.values()} == {doc.NA}, rows
 
 
@@ -683,6 +684,33 @@ def test_roots_config_two_AGREEING_copies_are_OK(sandbox):
     assert r.status == doc.OK and "x4config.py" in r.detail, r
 
 
+#: FX-B2 (reviewer C I1): a config line the grammar REFUSES was dropped SILENTLY. One line
+#: per reason, each a twin of the others: the row must FAIL naming line:reason, never the value.
+_IGNORED_LINES = [
+    ("operator", 'X4_MODS=C:/mods/a&b'),
+    ("subst", 'X4_MODS=$(echo SECRETVALUE)'),
+    ("shape", 'this is not an assignment SECRETVALUE'),
+]
+
+
+@pytest.mark.parametrize("reason,line", _IGNORED_LINES, ids=[r for r, _l in _IGNORED_LINES])
+def test_roots_config_FAILS_on_a_line_every_loader_IGNORES(sandbox, reason, line):
+    cfg = sandbox.root / "x4-paths.env"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+    n = len(cfg.read_text(encoding="utf-8").splitlines())
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.FAIL and ("%d:%s" % (n, reason)) in r.detail, r
+    assert "SECRETVALUE" not in r.detail and "a&b" not in r.detail, "a VALUE was printed: " + r.detail
+
+
+@pytest.mark.parametrize("line", ['X4_MODS="C:/mods/a&b"', "OTHER_TOOL_SETTING=1"])
+def test_TWIN_roots_config_a_QUOTED_operator_or_a_foreign_key_is_not_a_FAIL(sandbox, line):
+    cfg = sandbox.root / "x4-paths.env"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.OK, r
+
+
 def test_roots_config_env_only_is_OK(sandbox):
     (sandbox.root / "x4-paths.env").unlink()
     env = {k: v for k, v in os.environ.items()}
@@ -793,7 +821,7 @@ def codex_root(tmp_path, monkeypatch):
 
 
 def _codex(root):
-    return {r.id: r for r in doc.check_codex(doc.Ctx(root=root))}
+    return {r.id: r for r in doc.check_codex(doc.Ctx(root=root, toolkit=root))}
 
 
 def _cfg(root: Path, *, trusted=True, entries=None, extra="") -> None:
@@ -1041,7 +1069,8 @@ def _refguard_stub(state):
 
 
 @pytest.mark.parametrize("state,codex,want", [
-    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "TODO"),
+    ("protected", False, "OK"), ("absent", False, "TODO"), ("partial", False, "FAIL"),
+    ("absent", True, "TODO"),
     ("partial", True, "FAIL"), ("unsupported", True, "UNKNOWN"), ("error", True, "UNKNOWN"),
     ("foreign", True, "UNKNOWN"), ("unconfigured", True, "UNKNOWN"), ("protected", True, "OK")])
 def test_layer2_states(sandbox, monkeypatch, state, codex, want):
@@ -1070,14 +1099,29 @@ def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(san
     hook-level delete guard, so the real query must say FAIL."""
     shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.TODO and "x4refguard.py apply " in r.detail, r   # C2: the user's step
+    assert r.status == doc.TODO and 'x4refguard.py" apply ' in r.detail, r   # C2: the user's step
+    # FX-B2: the command is ABSOLUTE -- `scripts/...` relative to an unknown cwd named nothing
+    m = re.search(r'python "([^"]+x4refguard\.py)" apply', r.detail)
+    assert m and Path(m.group(1)).is_absolute() and Path(m.group(1)).is_file(), r
     # R2-b: a HUMAN reads this row, so plain `apply` (it asks); --yes only as an explanation
     assert "apply --yes" not in r.detail, r
 
 
-def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):
+def test_layer2_REAL_unprotected_claude_only_root_is_the_users_STEP_not_OK(sandbox):
+    """FX-B2 (delta review): a Claude-only root read OK whatever the state, "the Claude hooks
+    cover deletes". Unprotected is the user's pending step on EVERY root (TODO); the hooks
+    sentence appears only where they are wired (the sandbox copies settings.json)."""
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.OK and "Claude hooks" in r.detail, r
+    assert r.status == doc.TODO and "YOUR STEP" in r.detail, r
+    assert "Claude hooks (wired" in r.detail, r
+
+
+def test_TWIN_layer2_claude_root_WITHOUT_wired_hooks_does_not_claim_them(sandbox, monkeypatch):
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("absent"))
+    (sandbox.root / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == doc.TODO and "No Claude delete hook is wired" in r.detail, r
+    assert "Claude hooks (wired" not in r.detail, r
 
 
 def _lock_row(ctx):
@@ -1109,9 +1153,21 @@ def test_x4lock_a_MISSING_protected_file_is_UNKNOWN(sandbox, monkeypatch):
 
 
 def _as_in_game_install(sandbox):
-    """The sandbox root as an in-game install: the game folder IS the toolkit."""
+    """The sandbox root as an in-game install: the game folder IS the toolkit.
+
+    CI2 (CI on da93d2d, ubuntu): with no scripts/ here the doctor fell back to the CHECKOUT's
+    x4lock.py, whose manifest also demands the checkout's own x4-paths.env -- per-machine,
+    gitignored, so ABSENT in CI ("1 missing" became "2"), and present on a developer machine
+    (or waived in a linked worktree, which then demands the MAIN checkout's). The scenario now
+    carries its own x4lock and resolver, as an installed toolkit does: nothing of the
+    developer's checkout is read."""
     for name, text in (("CLAUDE.md", "# c\n"), ("KNOWLEDGEBASE.md", "# kb\n")):
         (sandbox.root / name).write_text(text, encoding="utf-8")
+    (sandbox.root / "scripts").mkdir(exist_ok=True)
+    shutil.copy2(REPO / "scripts" / "x4lock.py", sandbox.root / "scripts" / "x4lock.py")
+    shutil.copytree(REPO / "tools" / "x4validate" / "x4validate",
+                    sandbox.root / "tools" / "x4validate" / "x4validate",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.root,
               X4_REFERENCE=sandbox.ref)
 
@@ -1125,6 +1181,9 @@ def test_x4lock_row_asks_the_REAL_x4lock_with_the_roots_environment(sandbox):
     ctx = sandbox.ctx(env=dict(os.environ, X4_TOOLKIT=str(sandbox.root)))
     r = _lock_row(ctx)
     assert r.status == doc.OK and "0 missing" in r.detail, r
+    # it asked the SANDBOX's x4lock, never the checkout's (CI2)
+    got, where = doc._x4lock_answer(ctx)
+    assert Path(where).resolve() == (sandbox.root / "scripts" / "x4lock.py").resolve(), where
     n = int(r.detail.split(" protected")[0])
     hooks = len(list((sandbox.root / ".claude" / "hooks").glob("*.sh")))
     assert n >= hooks + 3, r          # the hooks, CLAUDE.md, KNOWLEDGEBASE.md, settings.json
@@ -1142,7 +1201,7 @@ def test_the_doctor_never_WRITES_the_codex_config(codex_root):
     _cfg(codex_root)
     p = Path(os.environ["CODEX_HOME"]) / "config.toml"
     before = (p.read_bytes(), p.stat().st_mtime_ns)
-    doc.collect(doc.Ctx(root=codex_root))
+    doc.collect(doc.Ctx(root=codex_root, toolkit=codex_root))
     assert (p.read_bytes(), p.stat().st_mtime_ns) == before
 
 
@@ -1188,7 +1247,7 @@ def test_a_TARGET_whose_guard_copy_is_MISSING_is_FAIL_not_NA(codex_root):
     """MEASURED on the review scratch project: hooks.json present, .codex/hooks/ absent --
     the self-test read N/A 'not installed'. Hooks that point at absent scripts fail, and
     Codex then runs the command."""
-    rows = {r.id: r for r in doc.check_guards(doc.Ctx(root=codex_root))}
+    rows = {r.id: r for r in doc.check_guards(doc.Ctx(root=codex_root, toolkit=codex_root))}
     assert rows["guards.selftest.codex"].status == doc.FAIL, rows["guards.selftest.codex"]
     assert rows["guards.selftest.claude"].status == doc.NA
 
@@ -1229,6 +1288,9 @@ def oc_root(tmp_path, monkeypatch):
 
 
 def _oc_rows(root, fn, **kw):
+    # FX-B2 (reviewer C): a Ctx without toolkit= acts for the toolkit the doctor LIVES in --
+    # the checkout -- and read its REAL config. Every scenario names its scratch toolkit.
+    kw.setdefault("toolkit", root)
     return {r.id: r for r in fn(doc.Ctx(root=root, **kw))}
 
 

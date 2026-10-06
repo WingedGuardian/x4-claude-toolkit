@@ -357,6 +357,7 @@ _PROBE = r'''
 printf 'TOOLKIT=%s\nGAME=%s\nREFERENCE=%s\nPROFILE=%s\nMODS=%s\nCFG=%s\n' \
   "${X4_TOOLKIT:-}" "${X4_GAME:-}" "${X4_REFERENCE:-}" "${X4_PROFILE:-}" "${X4_MODS:-}" "${_x4_cfg:-}"
 printf 'CFGSRC=%s\nCFGTK=%s\nREFDEF=%s\n' "${_x4_cfg_src:-}" "${_x4_cfg_tk:-}" "${_x4_ref_defaulted:-}"
+printf 'CFGIGN=%s\n' "${_x4_cfg_ignored:-}"
 x4_resolve_python
 printf 'PY=%s\n' "$X4_PY"
 if [ -n "$X4_PY" ]; then
@@ -525,9 +526,12 @@ print(json.dumps(out))
 
 
 def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
-    """The tools' answer. The resolver CODE comes from X4_TOOLKIT, else the root, else the
-    toolkit this doctor ships in; the CONFIG it finds is decided by env and cwd alone, as
-    for any tool an agent runs from the root."""
+    """The tools' answer. The resolver CODE comes from the doctor's toolkit (`ctx.toolkit`:
+    --toolkit, else the toolkit this doctor lives in), else the root, else the toolkit this
+    doctor ships in. The CONFIG it reads is that toolkit's (passed as `use_toolkit`, B2),
+    unless the environment names one with $X4_CONFIG; the environment's X4_* variables still
+    outrank it, as for any tool an agent runs from the root (FX-B2: this said "env and cwd
+    alone", true only before B2)."""
     for base in (ctx.toolkit, ctx.root, HERE.parent):
         if base and (Path(base) / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file():
             pkg = Path(base) / "tools" / "x4validate"
@@ -615,6 +619,18 @@ def check_roots(ctx: Ctx) -> list[Check]:
         if vals is None:
             return UNKNOWN, why
         cfg, src = vals.get("CFG", ""), vals.get("CFGSRC", "")
+        # FX-B2 (reviewer C I1): a line the grammar REFUSES is dropped by every loader, and what
+        # it would set falls back to a default -- silently, until this row. `guard` has its own
+        # FAIL (guard.escape); `key` (a non-X4 variable) configures nothing either way.
+        ign = [t for t in (vals.get("CFGIGN") or "").split() if t.rpartition(":")[2] in
+               ("shape", "subst", "operator")]
+        if ign:
+            return FAIL, ("the path config %s has lines every loader IGNORES (line:reason): %s -- "
+                          "what they would set falls back to a default. shape = not KEY=value; "
+                          "subst = $( ) or a backtick (never run): write the literal path; "
+                          "operator = an unquoted ; & | < >: quote the value, e.g. "
+                          "X4_REFERENCE=\"D:/x4/ref&x\". Fix it by hand (agents may not write it)"
+                          % (cfg or "?", ", ".join(ign)))
         if not src:
             return _config_pre40(cfg)
         tk = vals.get("CFGTK") or vals.get("TOOLKIT") or "<toolkit>"
@@ -1078,6 +1094,19 @@ def check_claude(ctx: Ctx) -> list[Check]:
             run_check("claude.enabled", "claude", _enabled, ctx)]
 
 
+def _claude_delete_hook_wired(root: Path) -> bool:
+    """Is a Claude delete guard actually WIRED at *root*: .claude/settings.json names
+    protect-bash.sh and the hook file exists? A present .claude/ alone is not a guard."""
+    root = Path(root)
+    if not (root / ".claude" / "hooks" / "protect-bash.sh").is_file():
+        return False
+    try:
+        return "protect-bash.sh" in (root / ".claude" / "settings.json").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
 def _x4refguard_module(ctx: Ctx):
     """Layer 2 (the OS-level deny-delete on reference/) is scripts/x4refguard.py -- NOT x4lock,
     which an earlier version of this check asked, so the row could never answer."""
@@ -1231,6 +1260,21 @@ def check_common(ctx: Ctx) -> list[Check]:
         hookless = [t for t in ("codex", "opencode", "generic") if ctx.targets.get(t)]
         if st == "protected":
             return OK, "reference/ carries the OS-level delete protection"
+        apply_cmd = 'python "%s" apply' % Path(getattr(m, "__file__", "scripts/x4refguard.py")).resolve()
+        if st in ("absent", "partial") and not hookless:
+            # FX-B2 (delta review): a Claude-only root read OK here whatever the state, saying
+            # "the Claude hooks cover deletes" -- true only if they are WIRED. absent is the
+            # user's pending step (TODO); partial is broken (FAIL). Never OK.
+            wired = _claude_delete_hook_wired(ctx.root)
+            cover = (" Meanwhile the Claude hooks (wired in .claude/settings.json) block deletes "
+                     "made THROUGH Claude only." if wired else
+                     " No Claude delete hook is wired here (.claude/settings.json), so nothing "
+                     "else covers deletes.")
+            return (TODO if st == "absent" else FAIL), (
+                "%sreference/ has %s OS-level delete protection (x4refguard: %s) -- run: %s "
+                "(it shows the folder and a count, then asks).%s"
+                % ("YOUR STEP: " if st == "absent" else "",
+                   "NO" if st == "absent" else "only PARTIAL", st, apply_cmd, cover))
         if st in ("absent", "partial"):
             if hookless:
                 names = {"codex": "Codex", "opencode": "OpenCode", "generic": "generic"}
@@ -1239,11 +1283,11 @@ def check_common(ctx: Ctx) -> list[Check]:
                 return (TODO if st == "absent" else FAIL), (
                     "%sreference/ has %s OS-level delete protection, and a %s agent here has "
                     "no Claude hook-level delete guard to fall back on -- run: "
-                    "python scripts/x4refguard.py apply (it shows the folder and a count, then "
+                    "%s (it shows the folder and a count, then "
                     "asks; --yes answers for you, e.g. when an agent runs it after you agreed)"
                     % ("YOUR STEP: " if st == "absent" else "",
                        "NO" if st == "absent" else "only PARTIAL",
-                       " / ".join(names[t] for t in hookless)))
+                       " / ".join(names[t] for t in hookless), apply_cmd))
             return OK, ("no OS-level delete protection on reference/ (%s); the Claude hooks cover "
                         "deletes" % st)
         return UNKNOWN, "the OS-level protection state of reference/ is %r: %s" % (st, detail)
@@ -1255,12 +1299,14 @@ def check_common(ctx: Ctx) -> list[Check]:
         counts, gone = got.get("states") or {}, int(got.get("missing") or 0)
         detail = "%d protected: %s; %d missing" % (sum(counts.values()), ", ".join(
             "%d %s" % (v, k) for k, v in sorted(counts.items())) or "none", gone)
+        # ABSOLUTE (FX-B2): `scripts/x4lock.py` is relative to a cwd the reader may not share.
+        lk = 'python "%s"' % Path(why).resolve()
         if gone:
             return UNKNOWN, detail + (" -- a protected file the manifest expects is ABSENT "
-                                      "(deleted, renamed, or never installed): python scripts/x4lock.py status")
+                                      "(deleted, renamed, or never installed): %s status" % lk)
         if counts.get("unlocked"):
             # R4-2: locking is the user's CHOICE, so this is an answer, never UNKNOWN.
-            return OK, detail + " (informational: locking is your choice -- python scripts/x4lock.py lock)"
+            return OK, detail + " (informational: locking is your choice -- %s lock)" % lk
         return OK, detail
 
     return [run_check("guard.escape", "all", _escape, ctx),

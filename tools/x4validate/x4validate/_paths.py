@@ -552,7 +552,55 @@ def _file_layer() -> tuple[dict[str, str], Path | None]:
     toolkit_notice()
     env_file = _find_env_file()
     _notice(env_file)
-    return (parse_env_file(env_file) if env_file else {}), env_file
+    values, ignored = parse_env_report(env_file) if env_file else ({}, [])
+    _IGNORED[:] = ignored
+    _ignored_notice(env_file, ignored)
+    return values, env_file
+
+
+#: The `(line, reason)` pairs the config file last read had IGNORED (see `config_ignored`).
+_IGNORED: list[tuple[int, str]] = []
+
+#: What each ignore reason means, in the words the bash banner uses.
+IGNORE_REASONS = {
+    "shape": "not KEY=value",
+    "key": "not an X4_* key",
+    "subst": "$( ) or a backtick (shell code is never run)",
+    "operator": "an unquoted ; & | < > (quote the value)",
+    "guard": "X4_GUARD/X4_GUARD_CHECK (launch environment only)",
+}
+
+
+def config_ignored() -> list[tuple[int, str]]:
+    """`(line number, reason)` for every line of the config file in use that was IGNORED.
+    Line numbers and reasons only -- never a value: the file may hold X4_NEXUS_KEY."""
+    _file_layer()
+    return list(_IGNORED)
+
+
+def describe_ignored(ignored) -> str:
+    """`3:operator, 4:subst` -- the compact form the notice, --paths and x4doctor print."""
+    return ", ".join(f"{n}:{why}" for n, why in ignored)
+
+
+def _ignored_notice(env_file: Path | None, ignored) -> None:
+    """ONE stderr line per process per file when the config has IGNORED lines (FX-B2, reviewer
+    C I1): a line the grammar refuses -- an unquoted `X4_REFERENCE=<dir>/ref&x`, a
+    `X4_MODS=$(...)` -- was dropped SILENTLY by every Python tool, which then fell back to a
+    default (`<toolkit>/reference`), exit 0, nothing on stderr. Line:reason, never a value."""
+    if env_file is None or not ignored:
+        return
+    key = "ignored:" + str(env_file)
+    if key in _NOTICED:
+        return
+    _NOTICED.add(key)
+    reasons = sorted({why for _n, why in ignored})
+    print(f"x4 config: {env_file} -- these lines were IGNORED (line:reason): "
+          f"{describe_ignored(ignored)}. "
+          + "; ".join(f"{r} = {IGNORE_REASONS.get(r, r)}" for r in reasons)
+          + ". Every path they would set falls back to its default. Fix them by hand; check "
+            "with: x4validate --paths, or python scripts/x4doctor.py",
+          file=sys.stderr)
 
 
 def reload() -> None:
@@ -1032,6 +1080,12 @@ def describe() -> list[str]:
     elif os.environ.get("X4_CONFIG"):
         label = f"   ($X4_CONFIG names {os.environ['X4_CONFIG']}, which does not exist)"
     lines = [f"config file: {env_file or '(none found — set $X4_TOOLKIT or run install)'}{label}"]
+    ignored = config_ignored()
+    if ignored:
+        reasons = sorted({why for _n, why in ignored})
+        lines.append(f"  IGNORED config lines (line:reason): {describe_ignored(ignored)}   ("
+                     + "; ".join(f"{r} = {IGNORE_REASONS.get(r, r)}" for r in reasons)
+                     + " -- what they would set falls back to a default)")
     env = {k: v for k, v in os.environ.items() if k.startswith("X4_") and v}
     ref_defaulted = not any(layer.get("X4_REFERENCE")
                             for layer in (env, file_layer, _LOCAL_FALLBACK))

@@ -119,13 +119,18 @@ SUPPORTED = ("windows", "linux", "darwin")
 SAMPLE_SCOPE = ("root + sentinel + first file of each top-level dir "
                 "(not a census; use --full)")
 
+#: THIS script, as a command that works from ANY directory (FX-B2, delta review: the hints said
+#: `python scripts/x4refguard.py`, relative to a cwd that is often the game folder or another
+#: toolkit -- where it names a different script or none).
+SELF_CMD = 'python "%s"' % Path(__file__).resolve()
+
 ESCAPE_HATCH = """\
 To lift it (a USER's step, never an agent's on its own):
-  1. python scripts/x4refguard.py remove        (shows the folder and a count, then asks; --yes skips)
-  2. root moved since?  python scripts/x4refguard.py remove --path <old root>
+  1. %(self)s remove        (shows the folder and a count, then asks; --yes skips)
+  2. root moved since?  %(self)s remove --path <old root>
   3. tool broken? Windows, from cmd.exe: icacls "<root>" /remove:d *<your SID>  (whoami /user)
      Linux: sudo chattr -R -i "<root>" or chmod -R u+w "<root>"; macOS: chflags -R nouchg "<root>"
-  4. last resort, Windows, elevated: icacls "<root>" /reset /T /C"""
+  4. last resort, Windows, elevated: icacls "<root>" /reset /T /C""" % {"self": SELF_CMD}
 
 
 #: C6 (install red-team): "unconfigured / moved?" said WHAT, never how to fix it.
@@ -942,8 +947,9 @@ _HUMAN_STATE = {"absent": "not applied"}
 #: was printed for "absent" too, where there is nothing to lift).
 _LIFTABLE = ("protected", "partial", "foreign")
 
-APPLY_HINT = ("To apply it: python scripts/x4refguard.py apply   (shows the folder and a count, "
-              "then asks you; --yes answers for you, e.g. when an agent runs it after you agreed)")
+APPLY_HINT = ("To apply it: %s apply   (shows the folder and a count, "
+              "then asks you; --yes answers for you, e.g. when an agent runs it after you agreed)"
+              % SELF_CMD)
 
 
 def _human(r: dict) -> str:
