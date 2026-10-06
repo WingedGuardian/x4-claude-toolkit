@@ -4733,6 +4733,41 @@ class TestE7EveryAclLiftAsks(unittest.TestCase):
         self.assertEqual(H._icacls_paths('icacls "C:/a" /grant "' + REF + ':F"'), ["C:/a"])
 
 
+class TestAShellWriteToAgentSettingsIsRefused(unittest.TestCase):
+    """User decision 2026-10-05 ("Block X4_GUARD there"): a settings `env` block reaches every
+    hook, and a shell write's resulting content cannot be seen -- so every shell WRITE to a
+    `.claude/settings*.json` is refused (the file-edit tools are judged on content instead)."""
+    FACT = "writes_agent_settings"
+    S = TOOLKIT + "/.claude/settings.json"
+
+    def test_every_write_primitive_to_a_settings_file_fires(self):
+        for c in ("echo x > '" + self.S + "'", "echo x >> '" + self.S + "'",
+                  "jq . a.json > '" + TOOLKIT + "/.claude/settings.local.json'",
+                  "cp a.json '" + self.S + "'", "mv a.json '" + self.S + "'",
+                  "echo x | tee '" + self.S + "'", "sed -i s/a/b/ '" + self.S + "'",
+                  "echo x > " + DQ + "$HOME/.claude/settings.json" + DQ,
+                  "cd '" + TOOLKIT + "/.claude' && echo x > settings.json"):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)[self.FACT], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_read_a_delete_or_a_move_AWAY_is_not_a_write(self):
+        """Clause: a WRITE. Removing the file sets nothing."""
+        for c in ("cat '" + self.S + "'", "jq .env '" + self.S + "'", D + " '" + self.S + "'",
+                  "mv '" + self.S + "' /c/elsewhere/old.json", "cp '" + self.S + "' /c/x/bak.json"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)[self.FACT], c)
+
+    def test_TWIN_another_name_or_folder_is_not_a_settings_file(self):
+        """Clause: `.claude/settings*.json`."""
+        for c in ("echo x > '" + TOOLKIT + "/.claude/hooks/x.json'",
+                  "echo x > '" + TOOLKIT + "/settings.json'",
+                  "echo x > '" + TOOLKIT + "/.claude/settings.json.bak'",
+                  "echo x > '" + TOOLKIT + "/.claudex/settings.json'"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)[self.FACT], c)
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.

@@ -442,6 +442,15 @@ $_x4_cfg_paths
 EOF
 fi
 
+# === DENY — a SHELL write to a Claude Code settings file (user decision 2026-10-05) ===
+# A settings `env` block reaches every hook (MEASURED, Claude Code 2.1.290), so `"X4_GUARD":
+# "off"` written there switches the guards off at the next launch. A shell write's resulting
+# content cannot be seen, so it is refused outright -- a DENY with a remedy, never an ask (the
+# user's no-prompt rule) -- and the file-edit tools, whose content settings_guard.py judges,
+# stay open for every other settings edit. ACCEPTED RESIDUAL: a write from inside an opaque
+# interpreter (`python -c "open(...)"`) is not seen.
+on writes_agent_settings && deny "BLOCKED: a shell command may not write a Claude Code settings file (.claude/settings*.json): its env block reaches every hook, and the guard cannot see what a shell write leaves there -- X4_GUARD in it would switch the X4 guards off. Make the edit with your file-edit tool (Write / Edit / apply_patch), whose content the guard checks; X4_GUARD itself is the user's to set, at launch. Command: $COMMAND"
+
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
 # The FILESYSTEM test stays here; the parse pass never touches the disk.

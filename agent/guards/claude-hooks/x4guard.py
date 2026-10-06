@@ -256,6 +256,14 @@ def resolve_bash() -> tuple[str | None, str | None]:
                   f"(adjust the path if Git is installed elsewhere)")
 
 
+def is_agent_settings(path: str | None) -> bool:
+    """A Claude Code settings file (`.claude/settings*.json`), whose written TEXT the adapters
+    pass to the guard (settings_guard.py, user decision 2026-10-05)."""
+    import re
+    return bool(path) and bool(re.search(r"(^|/)\.claude/settings[^/]*\.json$",
+                                         str(path).replace(chr(92), "/").lower()))
+
+
 def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
     if kind == "shell":
         # `cwd` at the TOP level, where Claude Code and Codex put it: a relative operand is judged
@@ -263,6 +271,11 @@ def guard_payload(kind: str, shell: str | None, command: str | None, path: str |
         # has already entered the payload's cwd, so this is the Codex session cwd too.
         return {"tool_name": "PowerShell" if shell == "powershell" else "Bash",
                 "tool_input": {"command": command}, "cwd": os.getcwd()}
+    if command is not None or is_agent_settings(path):
+        # The TEXT this write applies (an apply_patch, an OpenCode write/edit), for the
+        # settings-file rule (settings_guard.py, user decision 2026-10-05). Not `content`: a
+        # patch is not the file's resulting content, and the rule judges the two differently.
+        return {"tool_name": "Write", "tool_input": {"file_path": path, "x4_written": command}}
     return {"tool_name": "Write", "tool_input": {"file_path": path, "content": ""}}
 
 
@@ -402,7 +415,7 @@ def _verdict(kind: str, shell: str | None, command: str | None, path: str | None
     if kind == "shell":
         return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline, budget)
     path = os.path.abspath(path)
-    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path), deadline, budget)]
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, command, path), deadline, budget)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
         rm = "rm -rf -- '" + quoted + "'"
@@ -453,7 +466,8 @@ def main(argv=None) -> int:
     c.add_argument("--kind", required=True, choices=("shell", "write", "delete"))
     c.add_argument("--shell", choices=("bash", "powershell"),
                    help="the shell that will EXECUTE the command (not the tool that sent it)")
-    c.add_argument("--command")
+    c.add_argument("--command", help="shell: the command; write/delete: the TEXT written, which "
+                   "the guard needs for a .claude/settings*.json (without it, such a write is denied)")
     c.add_argument("--path")
     a = ap.parse_args(argv)
     if a.cmd == "conformance":            # only reachable with options before the word

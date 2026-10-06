@@ -666,6 +666,9 @@ MUTANTS = [
      '_ICACLS_LIFTS = ("/remove", "/reset", "/grant", "/inheritance", "/restore", "/setowner",',
      '_ICACLS_LIFTS = ("/remove", "/reset", "/zz1", "/zz2", "/zz3", "/zz4",',
      "test_every_acl_modifying_switch_lifts"),
+    ("settings rule: a shell write to .claude/settings*.json",
+     "            _AGENT_SETTINGS.search(norm(pp or rr))", "            False",
+     "test_every_write_primitive_to_a_settings_file_fires"),
 ]
 
 SHIM = '''
@@ -686,6 +689,38 @@ def facts(payload, roots):          # noqa: F811
 # `background` is a passthrough of the caller's own flag -- an INPUT the long-job rule
 # consumes, not a rule predicate. Excluded by name and printed, never quietly dropped.
 NOT_A_RULE = {"background"}
+
+
+def test_sources(text: str) -> dict:
+    """{test METHOD name: its own source, plus its class's non-test body (FACT/KEYS
+    attributes)}. A name defined in two classes gets both sources.
+
+    For the silent? column (reviewer E10, v4.0.0 delta review): pinning a predicate TRUE broke
+    the catch-all `test_TWIN_a_read_is_not_a_write` -- which asserts EVERY fact is false -- for
+    every predicate at once, so every rule read "probed" whether or not any test meant to keep
+    THAT rule silent existed. A failing test now credits a predicate only when its source
+    names the predicate (`"rm_hits_game"`), i.e. it was written about that rule."""
+    import ast
+    lines = text.splitlines(keepends=True)
+
+    def src(node):
+        return "".join(lines[node.lineno - 1:node.end_lineno])
+
+    out: dict = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            out[node.name] = out.get(node.name, "") + src(node)
+        elif isinstance(node, ast.ClassDef):
+            attrs = "".join(src(n) for n in node.body
+                            if not (isinstance(n, ast.FunctionDef) and n.name.startswith("test_")))
+            for n in node.body:
+                if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"):
+                    out[n.name] = out.get(n.name, "") + src(n) + attrs
+    return out
+
+
+def names_predicate(source: str, key: str) -> bool:
+    return ('"%s"' % key) in source or ("'%s'" % key) in source
 
 
 def run(work: Path):
@@ -802,12 +837,16 @@ def main() -> int:
         print(f"\n{'PREDICATE':<42} {'fires?':<14} silent?")
         print("-" * 78)
         gaps = 0
+        srcs = test_sources(source)
         for k in keys:
             row = []
             for val in ("False", "True"):
                 target.write_text(pristine + SHIM.format(key=k, val=val),
                                   encoding="utf-8", newline="")
                 _rc, f, r = run(work)
+                if val == "True":
+                    # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
+                    f = {t for t in f if names_predicate(srcs.get(t, ""), k)}
                 row.append("BROKE" if r < 20 else ("probed" if f else "*** NONE ***"))
             if "*** NONE ***" in row or "BROKE" in row:
                 gaps += 1
@@ -818,7 +857,7 @@ def main() -> int:
     print(f"mutations not caught by their target test: {bad} of {len(MUTANTS)}")
     print(f"predicates with a coverage gap:            {gaps} of {len(keys)}")
     print("  fires?   = predicate pinned FALSE, so a must-FIRE test must break")
-    print("  silent?  = predicate pinned TRUE,  so a must-NOT-fire test must break")
+    print("  silent?  = predicate pinned TRUE,  so a must-NOT-fire test NAMING it must break")
     return 1 if (bad or gaps) else 0
 
 

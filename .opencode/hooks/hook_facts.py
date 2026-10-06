@@ -4076,6 +4076,10 @@ def _as_ms(v) -> float:
         return 0.0
 
 
+#: A Claude Code settings file, any level (FX-G2 settings rule, user decision 2026-10-05).
+_AGENT_SETTINGS = re.compile(r"(^|/)\.claude/settings[^/]*\.json$")
+
+
 def facts(payload: dict, roots: dict) -> dict:
     inp = payload.get("tool_input") or {}
     cmd = inp.get("command") or ""
@@ -4523,6 +4527,14 @@ def facts(payload: dict, roots: dict) -> dict:
             for k in ("game", "profile", "mods", "toolkit", "reference")),
 
         "writes_documents": hit(writes_any, "documents"),
+        # A shell WRITE to a Claude Code settings file (user decision 2026-10-05: "Block
+        # X4_GUARD there"). Its `env` block reaches every hook, so `"X4_GUARD": "off"` there turns
+        # the guards off at the next launch -- and a shell write's resulting content cannot be
+        # seen, so every one is refused with the file-edit tool as the remedy (settings_guard.py
+        # judges that channel's content). A delete or a move AWAY is not a write and sets nothing.
+        "writes_agent_settings": any(
+            _AGENT_SETTINGS.search(norm(pp or rr))
+            for pp, _u, rr in copy_t + redir_t_all + sed_t + out_t),
         "writes_profile": hit(writes_any, "profile"),
         "copy_into_game_or_profile": bool(copy_t) and (
             hit(copy_t, "game") or hit(copy_t, "profile")),

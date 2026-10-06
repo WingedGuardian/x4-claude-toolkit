@@ -118,7 +118,11 @@ def translate(p: dict) -> tuple[list[tuple], list[tuple] | None, str | None]:
     if tool in FILE_TOOLS:
         raw = _arg(args, "filePath", tool)
         path = core._abspath(raw, base)
-        return [("write", None, None, path, f"{tool} {raw}")], [("update", path)], None
+        text = None
+        if core.x4guard.is_agent_settings(path):   # settings_guard.py judges what is written
+            parts = [args.get(k) for k in ("content", "newString")]
+            text = chr(10).join(x for x in parts if isinstance(x, str))
+        return [("write", None, text, path, f"{tool} {raw}")], [("update", path)], None
     if tool == PATCH_TOOL:
         # OpenCode's apply_patch runs OpenCode's OWN parser, not Codex's (R2-F1): read it that way
         text = _arg(args, "patchText", tool)

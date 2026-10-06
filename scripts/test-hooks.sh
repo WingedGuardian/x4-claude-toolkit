@@ -515,7 +515,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=256
+EXPECT=261
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1254,6 +1254,27 @@ else
   esac
 fi
 if [ -n "$_bk_saved" ]; then export X4_BACKUPS="$_bk_saved"; else unset X4_BACKUPS; fi
+
+# =============================================================================
+# X4_GUARD IN A CLAUDE CODE SETTINGS FILE (user decision 2026-10-05: "Block X4_GUARD there")
+# =============================================================================
+# A settings `env` block reaches every hook (MEASURED, Claude Code 2.1.290). The file tools are
+# judged on the RESULTING content; a shell write cannot be seen, so it is refused outright.
+echo; echo "=== X4_GUARD in a settings env: refused in every channel, reported at startup ==="
+_st="$SBX_TMP/settk"; mkdir -p "$_st/.claude"; printf '%s' '{"env":{"OTHER":"1"}}' > "$_st/.claude/settings.json"
+_sj(){ printf '{"tool_name":"Write","tool_input":{"file_path":%s,"content":%s}}' \
+         "$(printf '%s' "$_st/.claude/settings.json" | jq -Rs .)" "$(printf '%s' "$1" | jq -Rs .)"; }
+decide deny  protect-files.sh "$(_sj '{"env":{"X4_GUARD":"off"}}')"   "Write settings.json with X4_GUARD in env: denied"
+decide allow protect-files.sh "$(_sj '{"env":{"OTHER":"2"}}')"         "TWIN: Write settings.json without X4_GUARD: allowed"
+decide deny  protect-bash.sh  "$(cj "echo '{}' > '$_st/.claude/settings.local.json'")" "Bash: a redirect into settings.local.json: denied"
+decide allow protect-bash.sh  "$(cj "cat '$_st/.claude/settings.json'")" "TWIN: Bash: reading settings.json: allowed"
+printf '%s' '{"env":{"X4_GUARD":"off"}}' > "$_st/.claude/settings.json"
+_sc="$(CLAUDE_PROJECT_DIR="$_st" HOME="$SBX_TMP/nohome" bash "$HOOKS/session-canary.sh" 2>/dev/null)"
+case "$_sc" in
+  "[x4 guards] X4_GUARD is set in a Claude Code settings env block"*|*$'\n'"[x4 guards] X4_GUARD is set in a Claude Code settings env block"*)
+    ok "session-canary names the settings file that sets X4_GUARD" ;;
+  *) no "session-canary did not report X4_GUARD in the settings env: ${_sc:0:200}" ;;
+esac
 
 # THE CALLER-DIRECTORY CHECK RUNS LAST (reviewer E, minor): it sat above every section added
 # since, so a probe below it that leaked a path into the caller's directory went unseen.
