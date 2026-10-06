@@ -48,7 +48,7 @@ if [ -n "${X4_TOOLKIT:-}" ]; then
   if [ "$(_x4_lc "$_x4_env_tk")" != "$(_x4_lc "$ACT_TK")" ]; then
     echo "x4 toolkit: acting for $ACT_TK; \$X4_TOOLKIT names a different toolkit, $X4_TOOLKIT, which is NOT used here." >&2
     if [ "$EXPLICIT_TK" != 1 ]; then
-      echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_TOOLKIT names $X4_TOOLKIT while this script lives in $ACT_TK. Nothing was changed. To act for THIS toolkit: bash bin/unpack-reference.sh --toolkit \"$ACT_TK\"" >&2
+      echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_TOOLKIT names $X4_TOOLKIT while this script lives in $ACT_TK. Nothing was changed. To act for THIS toolkit: bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\"" >&2
       exit 2
     fi
   fi
@@ -90,6 +90,26 @@ _x4_canon() {    # a path in one spelling: its nearest EXISTING ancestor via cd+
   printf '%s' "$p"
 }
 _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded on Windows only
+
+# AN INHERITED X4_CONFIG (FX-B3, delta review reviewer F). The check below compares against
+# "this toolkit's config" -- but the loader took THAT file from $X4_CONFIG, which the shell
+# inherits like any other variable: naming another toolkit's config made the unpack write (and
+# protect) THAT toolkit's tree, and naming a missing file read no config at all, so nothing
+# was compared. Refuse unless --reference chose the tree explicitly.
+if [ -n "${X4_CONFIG:-}" ] && [ -z "$EXPLICIT_REF" ]; then
+  _x4_cfg_in=0
+  if [ -f "$X4_CONFIG" ]; then
+    case "$(_x4_canon "$X4_CONFIG")" in "$(_x4_canon "$ACT_TK")"/*) _x4_cfg_in=1 ;; esac
+  fi
+  if [ "$_x4_cfg_in" != 1 ]; then
+    if [ -f "$X4_CONFIG" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
+    echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_CONFIG ($X4_CONFIG) $_x4_why. Nothing was changed." >&2
+    echo "  acting toolkit: $ACT_TK" >&2
+    echo "  Unset X4_CONFIG in this shell to use this toolkit's config, or choose the tree explicitly:" >&2
+    echo "    bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference DIR" >&2
+    exit 2
+  fi
+fi
 if [ -n "$EXPLICIT_REF" ]; then
   X4_REFERENCE="$EXPLICIT_REF"; export X4_REFERENCE
 elif [ -n "$_X4_INHERITED_REF" ] && [ -n "${_x4_cfg:-}" ]; then
@@ -103,8 +123,10 @@ elif [ -n "$_X4_INHERITED_REF" ] && [ -n "${_x4_cfg:-}" ]; then
     echo "  this toolkit's config ($_x4_cfg) name DIFFERENT trees. Nothing was changed." >&2
     echo "    \$X4_REFERENCE in the environment -> $_X4_INHERITED_REF" >&2
     echo "    this toolkit's config            -> $_X4_CFG_REF" >&2
-    echo "  Choose one explicitly: bash bin/unpack-reference.sh --reference \"$_X4_CFG_REF\"  (the config's)" >&2
-    echo "                     or: bash bin/unpack-reference.sh --reference \"$_X4_INHERITED_REF\"  (the environment's)" >&2
+    # FX-B3 (reviewer F M1): absolute, and with --toolkit -- the relative form ran only from
+    # the toolkit root, and without --toolkit a foreign X4_TOOLKIT refused it again.
+    echo "  Choose one explicitly: bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference \"$_X4_CFG_REF\"  (the config's)" >&2
+    echo "                     or: bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference \"$_X4_INHERITED_REF\"  (the environment's)" >&2
     echo "  -- or unset X4_REFERENCE in this shell." >&2
     exit 2
   fi

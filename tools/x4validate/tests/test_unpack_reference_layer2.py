@@ -288,7 +288,9 @@ def test_B2_TWIN_X4_TOOLKIT_naming_this_toolkit_is_not_refused(tmp_path):
     cfg.write_text('X4_REFERENCE="%s"\n' % ref.as_posix(), encoding="utf-8")
     env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG=str(cfg))
     try:
-        r = _run(env, ref, explicit=False)
+        # FX-B3: an X4_CONFIG outside the acting toolkit now refuses unless --reference
+        # chooses the tree -- so the pin is paired with the explicit choice it needs.
+        r = _run(env, ref, "--reference", str(ref), explicit=False)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "--toolkit" not in r.stderr, r.stderr
     finally:
@@ -368,3 +370,75 @@ def test_FXB2_an_EMPTY_layer2_state_on_an_existing_tree_REFUSES(tmp_path):
     assert r.returncode == 2, r.stdout + r.stderr
     assert "REFUSING" in r.stderr and "not a known state" in r.stderr, r.stderr
     assert not (ref / "libraries" / "f1.xml").exists(), "the unpack ran"
+
+
+# ---------------------- FX-B3: an INHERITED X4_CONFIG, and refusals that can be pasted as-is
+
+def _foreign_cfg(tmp_path, names):
+    cfg = tmp_path / "elsewhere" / "x4-paths.env"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text('X4_REFERENCE="%s"\n' % Path(names).as_posix(), encoding="utf-8")
+    return cfg
+
+
+def test_FXB3_an_X4_CONFIG_OUTSIDE_the_toolkit_REFUSES_and_writes_nothing(tmp_path):
+    """The loader took "this toolkit's config" from $X4_CONFIG: naming another config made
+    the unpack write -- and protect -- the tree THAT config names. X4_REFERENCE is unset."""
+    ref, other = tmp_path / "reference", tmp_path / "theirs"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, other, X4_CONFIG=str(_foreign_cfg(tmp_path, other)))
+    env.pop("X4_REFERENCE")
+    r = subprocess.run([gitbash.find_bash() or pytest.skip("no Git Bash"), str(UNPACK),
+                        "--toolkit", env["X4_TOOLKIT"]], env=env, capture_output=True,
+                       text=True, errors="replace")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "X4_CONFIG" in r.stderr and "OUTSIDE" in r.stderr and "--reference" in r.stderr, r.stderr
+    assert not other.exists() and not ref.exists(), "it unpacked anyway"
+
+
+def test_FXB3_an_X4_CONFIG_naming_a_MISSING_file_REFUSES(tmp_path):
+    ref = tmp_path / "reference"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, ref, X4_CONFIG=str(tmp_path / "nope.env"))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2 and "does not exist" in r.stderr, r.stdout + r.stderr
+    assert not ref.exists(), "it unpacked anyway"
+
+
+def test_FXB3_TWIN_X4_CONFIG_naming_the_toolkit_s_OWN_config_proceeds(tmp_path):
+    ref = tmp_path / "reference"
+    tk = _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, ref, X4_CONFIG=str(tk / "x4-paths.env"))
+    try:
+        r = _run(env, ref, explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REFUSED" not in r.stderr, r.stderr
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB3_TWIN_reference_lifts_the_X4_CONFIG_refusal(tmp_path):
+    ref, other = tmp_path / "reference", tmp_path / "theirs"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, ref, X4_CONFIG=str(_foreign_cfg(tmp_path, other)))
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (ref / "libraries" / "f1.xml").exists() and not other.exists()
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB3_the_DIFFERENT_refusal_names_an_ABSOLUTE_command_with_toolkit(tmp_path):
+    """Reviewer F M1: `bash bin/unpack-reference.sh --reference ...` ran only from the toolkit
+    root, and without --toolkit a foreign X4_TOOLKIT refused it again."""
+    ref, other = tmp_path / "reference", tmp_path / "inherited"
+    tk = _tk_with_config(tmp_path, ref)
+    r = _run(_env(tmp_path, other), other, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    lines = [ln for ln in r.stderr.splitlines() if "--reference" in ln and "unpack-reference.sh" in ln]
+    assert len(lines) == 2, r.stderr
+    for ln in lines:
+        assert "bash bin/" not in ln and "--toolkit" in ln, ln
+        cmd_path = ln.split('bash "', 1)[1].split('"', 1)[0]
+        assert cmd_path.endswith("/unpack-reference.sh") and cmd_path.startswith("/"), ln
