@@ -1396,7 +1396,12 @@ def _body_substitutions(body: str) -> list[str]:
             continue
         if c == "$" and body[i + 1:i + 2] == "(":
             end = _match_paren(body, i + 1)
-            if body[i + 2:i + 3] == "(":        # arithmetic, not a command
+            if body[i + 2:i + 3] == "(":        # arithmetic -- whose substitutions RUN (item 4)
+                kind, text, end = _dollar_double_paren(body, i)
+                if kind == "arith":
+                    out.extend(_body_substitutions(text))
+                elif kind == "subst":
+                    out.append(text)
                 i = (end + 1) if end != -1 else i + 3
                 continue
             if end != -1:
@@ -2689,17 +2694,17 @@ def _git_destructive(seg, wanted, deep=False):
     rest = toks[si + 1:]
     if sub == "clean":
         # -f is required by git itself before it deletes anything; -n/--dry-run wins.
-        if any(t in ("-n", "--dry-run") for t in rest):
+        if any(t == "-n" or _git_long(t, "--dry-run") for t in rest):
             return []
         hot = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:]
-                  for t in rest) or "--force" in rest
+                  for t in rest) or any(_git_long(t, "--force") for t in rest)
         # deep (J-Q1): only a clean that reaches ignored files (-x / -X) or untracked
         # directories (-d). A plain `clean -f` removes untracked NON-ignored files only.
         if deep:
             hot = hot and any(t.startswith("-") and not t.startswith("--")
                               and set(t[1:]) & set("xXd") for t in rest)
     elif sub == "reset":
-        hot = "--hard" in rest
+        hot = any(_git_long(t, "--hard") for t in rest)
     elif sub == "stash":
         hot = _stash_removes_untracked(rest, deep)
     elif sub == "checkout":
@@ -2707,6 +2712,19 @@ def _git_destructive(seg, wanted, deep=False):
     else:                            # restore -- always about file contents
         hot = True
     return [base] if hot else []
+
+
+def _git_long(tok, opt, least=3):
+    """`tok` spells git's long option `opt`: exactly, or as an ABBREVIATION, which git's
+    parse-options accepts for any unambiguous prefix (`--al` is `--all`, `--har` is `--hard`,
+    `--fo` is `--force`, `--dry` is `--dry-run`). FX-G2 item 5 (v4.0.0 delta review), MEASURED
+    in a scratch repo: `git stash --a` deleted an ignored file and `git clean --fo -X` another,
+    while this file matched the full spellings only. An AMBIGUOUS prefix makes git refuse and
+    do nothing, so reading one as the option can only cost a false positive. `least` is the
+    shortest accepted spelling (`--x`; 6 = `--no-x` for a negation). A `=value` is not part of
+    the name."""
+    name = tok.split("=", 1)[0]
+    return len(name) >= least and name.startswith("--") and opt.startswith(name)
 
 
 def _stash_removes_untracked(rest, deep):
@@ -2736,16 +2754,16 @@ def _stash_removes_untracked(rest, deep):
             continue
         if t == "--":
             break
-        if t in ("-m", "--message", "--pathspec-from-file"):
-            skip = True
-        elif t == "--all":
-            every = True
-        elif t == "--no-all":
+        if t == "-m" or _git_long(t, "--message") or _git_long(t, "--pathspec-from-file"):
+            skip = "=" not in t
+        elif _git_long(t, "--no-all", 6):
             every = False
-        elif t == "--include-untracked":
-            untracked = True
-        elif t == "--no-include-untracked":
+        elif _git_long(t, "--no-include-untracked", 6):
             untracked = False
+        elif _git_long(t, "--all"):
+            every = True
+        elif _git_long(t, "--include-untracked"):
+            untracked = True
         elif t.startswith("-") and not t.startswith("--"):
             for k, ch in enumerate(t[1:], 1):
                 if ch == "a":
@@ -3087,6 +3105,25 @@ def _match_paren(s: str, start: int) -> int:
     return -1
 
 
+def _dollar_double_paren(s: str, i: int) -> tuple:
+    """`$((` at `i`: ("arith", the expression, end) for `$(( ... ))`, or ("subst", the command,
+    end) for `$( (subshell) ... )` -- whose inner paren closes BEFORE the outer one -- or
+    ("", "", -1) when unbalanced.
+
+    FX-G2 item 4 (v4.0.0 delta review), MEASURED: `$((` was stepped over WHOLE as arithmetic,
+    so `echo $(( $(rm -rf <game>) + 0 ))`, the backtick form, and the same inside an expanding
+    heredoc were ALLOWED past the game hard block -- an arithmetic expression EXPANDS its
+    substitutions before it evaluates them. And `$((rm -rf <game>) )` is not arithmetic at all
+    (bash reads it as a command substitution holding a subshell; MEASURED: `$((echo hi) )`
+    prints hi, `$((echo hi))` is an arithmetic syntax error)."""
+    end = _match_paren(s, i + 1)
+    if end == -1:
+        return "", "", -1
+    if _match_paren(s, i + 2) == end - 1:
+        return "arith", s[i + 3:end - 1], end
+    return "subst", s[i + 2:end], end
+
+
 def substitutions(cmd: str) -> list[str]:
     """Command text inside a substitution: dollar-paren, backticks, and process
     substitution.
@@ -3112,9 +3149,17 @@ def substitutions(cmd: str) -> list[str]:
             continue
         if c == "$" and i + 1 < len(cmd) and cmd[i + 1] == "(":
             if i + 2 < len(cmd) and cmd[i + 2] == "(":
-                end = _match_paren(cmd, i + 1)
-                i = (end + 1) if end != -1 else i + 3
-                continue                        # arithmetic, not a command
+                kind, text, end = _dollar_double_paren(cmd, i)
+                if kind == "arith":
+                    out.extend(substitutions(text))
+                    i = end + 1
+                    continue
+                if kind == "subst":
+                    out.append(text)
+                    i = i + 2
+                    continue
+                i += 3
+                continue
             end = _match_paren(cmd, i + 1)
             if end != -1:
                 out.append(cmd[i + 2:end])

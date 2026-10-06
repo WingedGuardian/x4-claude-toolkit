@@ -4414,6 +4414,84 @@ class TestG2WindowsPathAliases(unittest.TestCase):
             self.assertEqual(H.long_name(longdir + "/x"), longdir + "/x")
 
 
+class TestG2SubstitutionInsideArithmetic(unittest.TestCase):
+    """FX-G2 item 4 (v4.0.0 delta review): `$((` was stepped over WHOLE, so a substitution
+    inside arithmetic -- which bash EXPANDS before evaluating -- reached no rule, at the top
+    level and in an expanding heredoc body (MEASURED: 6 of 14 probes ALLOWED past the game
+    hard block). `$((cmd) )` is a command substitution holding a subshell, not arithmetic."""
+
+    BT = chr(96)
+    CASES = ("echo $(( $(" + DEL_GAME + ") + 0 ))",
+             "x=$(( " + chr(96) + DEL_GAME + chr(96) + " + 0 ))",
+             "echo $(( 1 + $(( $(" + DEL_GAME + ") )) ))",
+             "echo $((" + DEL_GAME + ") )",
+             "cat > n.txt <<EOF\n$(( $(" + DEL_GAME + ") + 0 ))\nEOF",
+             "cat > n.txt <<EOF\n$(( " + chr(96) + DEL_GAME + chr(96) + " ))\nEOF")
+
+    def test_a_substitution_inside_arithmetic_reaches_the_hard_block(self):
+        for c in self.CASES:
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+
+    def test_the_helper_tells_arithmetic_from_a_subshell(self):
+        self.assertEqual(H._dollar_double_paren("$(( 1 + 2 ))", 0)[:2], ("arith", " 1 + 2 "))
+        self.assertEqual(H._dollar_double_paren("$(((1+2)*3))", 0)[:2], ("arith", "(1+2)*3"))
+        self.assertEqual(H._dollar_double_paren("$((echo hi) )", 0)[:2], ("subst", "(echo hi) "))
+        self.assertEqual(H._dollar_double_paren("$(( 1", 0)[0], "")
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_plain_arithmetic_is_still_not_a_command(self):
+        """Clause: only a SUBSTITUTION inside it runs. `1 << 2` is not a heredoc or a write."""
+        for c in ("echo $(( 1 + 2 ))", "echo $(( 1 << 2 ))", "echo $(( x > 5 ? 1 : 0 ))"):
+            with self.subTest(c=c):
+                self.assertEqual(H.substitutions(c), [])
+                self.assertFalse(F(c)["rm_hits_game"])
+
+    def test_TWIN_single_quotes_and_a_quoted_heredoc_stay_literal(self):
+        """Clause: the expansion actually happens."""
+        self.assertFalse(F("echo '$(( $(" + DEL_GAME.replace(DQ, "") + ") ))'")["rm_hits_game"])
+        self.assertFalse(F("cat > n.txt <<'EOF'\n$(( $(" + DEL_GAME + ") ))\nEOF")["rm_hits_game"])
+
+
+class TestG2GitLongOptionAbbreviations(unittest.TestCase):
+    """FX-G2 item 5 (v4.0.0 delta review): git accepts any unambiguous PREFIX of a long option,
+    and the wipe rules matched only the full spelling. MEASURED in a scratch repo: `git stash
+    --a` deleted an ignored file, `git clean --fo -X` another, `--dry` is a dry run and `--mes
+    -a` a message reading `-a`."""
+    FACT = "git_wipe_from_session_dir"
+
+    def test_an_abbreviated_destructive_option_is_the_option(self):
+        for c in ("git stash --al", "git stash --a", "git stash push --al", "git reset --har",
+                  "git reset --ha HEAD", "git clean --fo -dx", "git clean --forc -x"):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, GAME)[self.FACT], c)
+        self.assertTrue(FC("git -C " + DQ + GAME + DQ + " stash --incl", _ELSEWHERE)
+                        ["git_wipes_x4_dir"])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_an_abbreviated_DRY_RUN_or_NEGATION_still_counts(self):
+        """Clause: the protective options abbreviate too -- or the twin of the rule is wrong."""
+        for c in ("git clean -fdx --dry", "git clean -fdx --d", "git stash --al --no-al",
+                  "git stash --a --no-a"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+
+    def test_TWIN_an_abbreviated_MESSAGE_consumes_its_value(self):
+        for c in ("git stash --mes -a", "git stash push --m -a"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+        self.assertTrue(FC("git stash --mes=wip -a", GAME)[self.FACT])   # `=` carries it
+
+    def test_TWIN_a_non_prefix_or_bare_dashes_is_not_the_option(self):
+        """Clause: a PREFIX of the option's name, at least one letter long."""
+        for c in ("git reset --mixed", "git reset --", "git stash --", "git stash --keep",
+                  "git stash --alx", "git reset --hardx"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+        self.assertFalse(H._git_long("--", "--all"))
+        self.assertTrue(H._git_long("--a", "--all"))
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.
