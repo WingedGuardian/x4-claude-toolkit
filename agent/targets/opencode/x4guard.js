@@ -12,11 +12,10 @@
 //
 // Exactly ONE export: OpenCode calls EVERY export of a plugin module as a plugin (READ).
 // Settings (environment): X4_PYTHON (+ X4_NO_PYTHON_FALLBACK=1), X4_OPENCODE_SHELL (bash or
-// powershell: the shell OpenCode RUNS commands in, if you set `shell` in OpenCode's config),
+// powershell: overrides the shell the plugin derives from OpenCode's `shell` config and $SHELL),
 // X4_OPENCODE_TIMEOUT_S (default 60; the adapter's own budget is 45).
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 // Every BUILT-IN OpenCode tool that writes a file or runs a command (R7-13, READ at v1.18.34:
@@ -48,12 +47,39 @@ function timeoutSeconds() {
   return t
 }
 
+// The grammar the guards judge a `bash` call in must be the grammar of the shell OpenCode RUNS it in
+// (FX-G3, v4.0.0 delta review). This mirrors OpenCode's own choice (READ packages/core/src/shell.ts,
+// acceptable(), at f2cf607): its configured `shell`, else $SHELL -- either one only if acceptable
+// (fish and nu are refused) -- else the platform default: on Windows pwsh, powershell, Git Bash,
+// %COMSPEC% in that order; elsewhere zsh (macOS) or bash or sh. The old version said "bash" for EVERY
+// shell off Windows (so a pwsh user's `Remove-Item -Recurse` was judged as bash: allow, where the
+// PowerShell grammar denies -- MEASURED with x4guard check), ignored the configured shell, and
+// called sh, zsh and cmd "powershell". A shell the guards have no grammar for (cmd, ...) is passed
+// through by name: the adapter refuses it, so the call is INERT (refused), never judged wrongly.
+const POSIX_SHELLS = new Set(["bash", "dash", "ksh", "sh", "zsh"])
+const PS_SHELLS = new Set(["pwsh", "powershell"])
+const REFUSED_BY_OPENCODE = new Set(["fish", "nu"])
+let configShell = null
+
+function shellBaseName(file) {
+  const base = String(file).split(/[\\/]/).pop().toLowerCase()
+  return WIN ? base.replace(/\.[^.]*$/, "") : base
+}
+
+function grammarOf(name) {
+  if (POSIX_SHELLS.has(name)) return "bash"
+  if (PS_SHELLS.has(name)) return "powershell"
+  return name // no guard grammar: the adapter refuses it (inert)
+}
+
 function shellName() {
   if (process.env.X4_OPENCODE_SHELL) return process.env.X4_OPENCODE_SHELL
-  if (!WIN) return "bash"
-  // OpenCode on Windows: its configured shell, else $SHELL, else pwsh/powershell first (READ core/shell.ts)
-  const sh = path.basename(process.env.SHELL || "").toLowerCase()
-  return sh === "bash" || sh === "bash.exe" ? "bash" : "powershell"
+  // OpenCode consults ONE source: the configured shell when set (falling back to the platform default,
+  // NOT to $SHELL, when it is refused), else $SHELL.
+  const chosen = configShell || process.env.SHELL || ""
+  const name = chosen ? shellBaseName(chosen) : ""
+  if (name && !REFUSED_BY_OPENCODE.has(name)) return grammarOf(name)
+  return WIN ? "powershell" : "bash"
 }
 
 let pythonCache = null
@@ -161,6 +187,12 @@ export const X4Guard = async ({ directory }) => {
     runAdapter(adapter, event, { v: 1, tool, args: args ?? {}, directory, shell: shellName() })
 
   return {
+    // OpenCode hands every plugin its config at load (READ plugin/index.ts: hook.config?.(cfg)); its
+    // `shell` decides which shell runs a `bash` call, so it decides the grammar it is judged in.
+    config: async (cfg) => {
+      configShell = cfg && typeof cfg.shell === "string" && cfg.shell.trim() ? cfg.shell.trim() : null
+    },
+
     "tool.execute.before": async (input, output) => {
       if (!JUDGED.has(input.tool)) return
       let v

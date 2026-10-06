@@ -223,3 +223,110 @@ def test_the_banner_is_added_to_the_system_prompt(oc):
     s = r["steps"][0]
     assert not s["threw"] and s["output"]["system"][0] == "base"
     assert s["output"]["system"][1].startswith("X4 GUARDS LIVE (opencode plugin v1)")
+
+
+# --- FX-G3 (v4.0.0 delta review): the grammar is the shell OpenCode RUNS the call in ------------- #
+# OpenCode's choice (READ packages/core/src/shell.ts acceptable(), f2cf607): config `shell`, else
+# $SHELL, each only if acceptable (fish/nu refused), else the platform default (Windows: pwsh/
+# powershell first; elsewhere zsh/bash/sh). The old plugin said "bash" for EVERY shell off Windows,
+# ignored the config, and called sh/zsh/cmd "powershell" on Windows.
+
+ECHO_SHELL = ("import json, sys\n"
+              "p = json.loads(sys.stdin.read())\n"
+              "print('X4OK ' + json.dumps({'v': 1, 'decision': 'deny', 'inert': False, "
+              "'reason': 'SHELL=' + str(p.get('shell')), 'context': None}))\n")
+
+
+def _shell_seen(tk, env, config=None):
+    (tk / ".opencode" / "hooks" / "opencode_adapter.py").write_text(ECHO_SHELL, encoding="utf-8")
+    steps = ([{"hook": "config", "input": config}] if config is not None else [])
+    steps.append(before("bash", {"command": "echo hi"}))
+    r = drive(tk, env, steps)
+    msg = r["steps"][-1]["message"] or ""
+    assert msg.startswith("SHELL="), r
+    return msg[len("SHELL="):]
+
+
+def _no_override(env, shell=None):
+    env = {k: v for k, v in env.items() if k not in ("X4_OPENCODE_SHELL", "SHELL")}
+    if shell is not None:
+        env["SHELL"] = shell
+    return env
+
+
+DEFAULT = "powershell" if WIN else "bash"
+
+
+@pytest.mark.parametrize("shell, grammar", [
+    ("/usr/bin/pwsh", "powershell"),            # RED off Windows: was "bash"
+    ("pwsh.exe" if WIN else "pwsh", "powershell"),
+    ("/bin/zsh", "bash"),
+    ("/bin/sh", "bash"),
+    ("sh.exe" if WIN else "dash", "bash"),      # RED on Windows: sh.exe was "powershell"
+    ("bash", "bash"),
+])
+def test_SHELL_decides_the_grammar(oc, shell, grammar):
+    tk, env = oc
+    assert _shell_seen(tk, _no_override(env, shell)) == grammar
+
+
+def test_a_cmd_SHELL_is_named_cmd_and_the_REAL_adapter_refuses_it_inert(oc):
+    """cmd has no guard grammar. It was judged as PowerShell; now the adapter refuses it."""
+    tk, env = oc
+    name = "C:\\Windows\\System32\\cmd.exe" if WIN else "/usr/bin/cmd"
+    assert _shell_seen(tk, _no_override(env, name)) == "cmd"
+
+
+def test_TWIN_cmd_through_the_REAL_adapter_is_INERT(oc):
+    tk, env = oc
+    r = drive(tk, _no_override(env, "C:\\Windows\\System32\\cmd.exe" if WIN else "/usr/bin/cmd"),
+              [before("bash", {"command": "echo hi"})])
+    s = r["steps"][0]
+    assert s["threw"] and "INERT" in s["message"], s
+
+
+@pytest.mark.parametrize("refused", ["/usr/bin/fish", "nu"])
+def test_a_shell_OpenCode_refuses_falls_back_to_the_platform_default(oc, refused):
+    tk, env = oc
+    assert _shell_seen(tk, _no_override(env, refused)) == DEFAULT
+
+
+def test_no_SHELL_at_all_is_the_platform_default(oc):
+    tk, env = oc
+    assert _shell_seen(tk, _no_override(env)) == DEFAULT
+
+
+def test_the_CONFIGURED_shell_beats_SHELL(oc):
+    """RED before the fix on every OS: the config was never read."""
+    tk, env = oc
+    assert _shell_seen(tk, _no_override(env, "/bin/bash"), config={"shell": "pwsh"}) == "powershell"
+    assert _shell_seen(tk, _no_override(env, "pwsh"), config={"shell": "/bin/bash"}) == "bash"
+
+
+def test_TWIN_a_REFUSED_configured_shell_falls_back_to_the_default_NOT_to_SHELL(oc):
+    tk, env = oc
+    other = "pwsh" if not WIN else "/bin/bash"          # the opposite of the platform default
+    assert _shell_seen(tk, _no_override(env, other), config={"shell": "fish"}) == DEFAULT
+
+
+def test_TWIN_a_config_without_a_shell_leaves_SHELL_in_charge(oc):
+    tk, env = oc
+    assert _shell_seen(tk, _no_override(env, "pwsh"), config={"model": "x"}) == "powershell"
+
+
+def test_X4_OPENCODE_SHELL_overrides_config_and_SHELL(oc):
+    tk, env = oc
+    env = dict(_no_override(env, "pwsh"), X4_OPENCODE_SHELL="bash")
+    assert _shell_seen(tk, env, config={"shell": "pwsh"}) == "bash"
+
+
+def test_a_POWERSHELL_delete_under_a_pwsh_config_THROWS_through_the_real_guards(oc):
+    """The consequence, end to end. MEASURED with x4guard check: `Remove-Item -Recurse -Force
+    <reference>/libraries` is allow under --shell bash and deny under --shell powershell -- so a
+    pwsh user whose plugin said "bash" had it waved through."""
+    tk, env = oc
+    cmd = f"Remove-Item -Recurse -Force '{(tk / 'reference' / 'libraries').as_posix()}'"
+    r = drive(tk, _no_override(env, "/bin/bash"),
+              [{"hook": "config", "input": {"shell": "pwsh"}}, before("bash", {"command": cmd})])
+    s = r["steps"][-1]
+    assert s["threw"] and "INERT" not in s["message"], s
