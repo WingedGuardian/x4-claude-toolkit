@@ -1288,6 +1288,10 @@ class TestUnresolvedDeleteOperands(unittest.TestCase):
         # matching finds the root. The VARIABLE NAME is the evidence.
         f = F('%s -rf "$X4_GAME"' % D)
         self.assertTrue(f["rm_in_x4_dir"])
+        # FX-G2: a LEADING root variable now resolves to its root (prep -> subst_root_var), so
+        # the name-only branch is what still catches one that does NOT lead the operand.
+        f = F('%s -rf "${PFX}$X4_GAME/x"' % D)
+        self.assertTrue(f["rm_in_x4_dir"])
 
     def test_delete_of_the_saves_env_var_by_name(self):
         f = F('%s -rf "$X4_SAVES"' % D)
