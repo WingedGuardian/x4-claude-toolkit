@@ -1001,6 +1001,11 @@ def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
     """
     known = name in assigns
     value = assigns.get(name, "")
+    if not known and name.upper() in ROOT_VARS:
+        # FX-G4 / H2: a ROOT variable the command did not assign is SET in the environment
+        # the shell runs in -- `${X4_GAME:-/x}` is the game root, not `/x`. Unknown here, so
+        # subst_root_var judges the token as that root.
+        return None
     if idx is not None:
         elems = _array_elements(value)
         n = int(idx[1:-1])
@@ -1151,19 +1156,53 @@ def subst_root_var(tok: str, roots: dict | None) -> str:
     if not roots:
         return tok
     m = _ROOT_VAR_HEAD.match(tok)
+    end = m.end() if m else 0
+    name = (m.group(1) or m.group(2)) if m else ""
     if not m:
-        return tok
-    key = ROOT_VARS.get((m.group(1) or m.group(2)).upper())
+        # FX-G4 / reviewer H2, MEASURED: `rm -rf "${X4_GAME:-/x}"`, `"${X4_GAME%/}"`,
+        # `"${X4_GAME:=/x}"` and `echo x > "${X4_REFERENCE:-/nope}/libraries/wares.xml"`
+        # were ALLOWED -- only `$X` / `${X}` were taken. A root variable under ANY brace
+        # operator may expand to that root (or, `%`, an ancestor of it), so it is judged AS
+        # the root: conservative in the refusing direction, never a guess that it is safe.
+        m2 = _ROOT_VAR_OP_HEAD.match(tok)
+        if not m2:
+            return tok
+        name, end = m2.group(1), _brace_end(tok, 1) + 1
+        if end <= 0:
+            # UNCLOSED: the word was cut at a space inside the braces (`G=${X4_GAME:-C:/X4
+            # Foundations}` tokenises as `${X4_GAME:-C:/X4`). The whole token is that root.
+            end = len(tok)
+    key = ROOT_VARS.get(name.upper())
     root = (roots.get(key) or "") if key else ""
     if not root:
         return tok
-    return root + tok[m.end():]
+    return root + tok[end:]
+
+
+#: `${NAME` followed by an OPERATOR (`:-`, `%`, `/`, `:=`, `[`, ...): not `}` and not a
+#: name character, which `_ROOT_VAR_HEAD` already covers.
+_ROOT_VAR_OP_HEAD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?=[^}A-Za-z0-9_])")
+_VAR_ANY = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _brace_end(tok: str, i: int) -> int:
+    """Index of the `}` closing the `{` at tok[i], or -1."""
+    depth = 0
+    for j in range(i, len(tok)):
+        if tok[j] == "{":
+            depth += 1
+        elif tok[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
 
 
 def root_vars_named(tok: str) -> set:
-    """Root KEYS named by an unexpanded environment variable in this token."""
+    """Root KEYS named by an unexpanded environment variable in this token -- under any
+    brace operator too (`${X4_GAME:-x}`, FX-G4 / H2)."""
     out = set()
-    for m in _VAR.finditer(tok):
+    for m in _VAR_ANY.finditer(tok):
         key = ROOT_VARS.get((m.group(1) or m.group(2)).upper())
         if key:
             out.add(key)
@@ -1321,24 +1360,62 @@ def _comment_start(line: str, mask: list) -> int:
     return len(line)
 
 
+_SUBSCRIPT_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
+
+
+def _match_close(line: str, mask: list, j: int, op: str, cl: str) -> int:
+    """Index of the unquoted `cl` closing the `op` at `j` (depth-counted), or len(line)-1
+    when the line ends first -- bash continues the region onto the next line."""
+    depth = 0
+    while j < len(line):
+        if not mask[j]:
+            if line[j] == op:
+                depth += 1
+            elif line[j] == cl:
+                depth -= 1
+                if depth == 0:
+                    return j
+        j += 1
+    return len(line) - 1
+
+
 def _blank_arith(line: str, mask: list) -> str:
-    """Blank `$(( ... ))` regions. `<<` inside arithmetic is a LEFT SHIFT."""
-    if "$((" not in line:
+    """Blank the regions where `<<` is NOT a heredoc opener: `$(( ))`, the arithmetic
+    COMMAND `(( ))` (incl. `for ((;;))` / `if ((..))`), `$[ ]`, `${ }` and an assignment
+    subscript `a[ ]=`. FX-G4 / reviewer H5, MEASURED in bash: `((x=1<<EOF))`,
+    `for ((i=0;i<1<<EOF;i++))`, `echo $[1<<EOF]`, `x=${y//<<EOF/z}`, `a[1<<EOF]=1` and
+    `echo ${#a[1<<EOF]}` all RUN the next line, while this scan opened a heredoc there and
+    hid every later line -- `rm -rf <game>` on line 2 was allowed past the hard block. Only
+    `$((` was blanked before. `echo x[1<<EOF]` and `declare a[1<<EOF]=3` DO open a heredoc
+    in bash; the second is blanked anyway (no trailing-`]=` test can tell it from an
+    assignment), which errs toward showing the rules MORE lines, never fewer."""
+    if not any(s in line for s in ("((", "$[", "${", "[")):
         return line
     out = list(line)
     i = 0
-    while i < len(line) - 2:
-        if line[i] == "$" and line[i + 1] == "(" and line[i + 2] == "(" and not mask[i]:
-            depth, j = 0, i + 1
-            while j < len(line):
-                if line[j] == "(":
-                    depth += 1
-                elif line[j] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            for k in range(i, min(j + 1, len(line))):
+    n = len(line)
+    while i < n - 1:
+        if mask[i]:
+            i += 1
+            continue
+        c, d = line[i], line[i + 1]
+        j = None
+        if c == "$" and d == "(" and i + 2 < n and line[i + 2] == "(":
+            j = _match_close(line, mask, i + 1, "(", ")")
+        elif c == "$" and d == "[":
+            j = _match_close(line, mask, i + 1, "[", "]")
+        elif c == "$" and d == "{":
+            j = _match_close(line, mask, i + 1, "{", "}")
+        elif c == "(" and d == "(" and (i == 0 or line[i - 1] in " " + chr(9) + ";&|({!"):
+            j = _match_close(line, mask, i, "(", ")")
+        elif (i == 0 or not (line[i - 1].isalnum() or line[i - 1] in "_$")):
+            m = _SUBSCRIPT_ASSIGN.match(line, i)
+            if m:
+                k = _match_close(line, mask, m.end() - 1, "[", "]")
+                if line[k + 1:k + 2] == "=" or line[k + 1:k + 3] == "+=":
+                    i, j = m.end() - 1, k
+        if j is not None:
+            for k in range(i, min(j + 1, n)):
                 out[k] = " "
             i = j + 1
             continue
@@ -1369,11 +1446,13 @@ def _is_heredoc_end(line: str, term: str) -> bool:
     bash: `x=$(cat <<EOF` / `hi` / `EOF)` ENDS the body (with a warning) and the next line
     RUNS, while this scan kept reading body to the end of the input -- so `rm -rf <game>` on
     the next line reached no rule. Ending a body too EARLY shows the rules more text; too
-    late hides it, so every doubt resolves toward ending."""
+    late hides it, so every doubt resolves toward ending. FX-G4 / reviewer H5, MEASURED: the
+    backtick form ends the same way -- `` x=`cat <<EOF `` / `hi` / `` EOF` `` runs the next
+    line -- so a delimiter followed by a backtick ends the body too."""
     s = line.strip()
     if s == term or s == term + ";":
         return True
-    return s.startswith(term) and s[len(term):].lstrip().startswith(")")
+    return s.startswith(term) and s[len(term):].lstrip()[:1] in (")", chr(96))
 
 
 def _heredoc_walk(cmd: str) -> tuple:
@@ -1412,14 +1491,30 @@ def _heredoc_walk(cmd: str) -> tuple:
     return docs, kept
 
 
-_CMD_RUN_SWITCH = re.compile(r"/{1,2}[cCkKrR]")
+_CMD_RUN_SWITCH = re.compile(r"/{1,2}[cCrR]")
+_CMD_KEEP_SWITCH = re.compile(r"/{1,2}[kK]")
+
+
+def _cmd_toks_read_stdin(toks: list) -> bool:
+    """Does the cmd.exe at toks[0] read a PROGRAM from stdin? FX-G4 / reviewer H1, MEASURED
+    in Git Bash: no switch -> yes (E4); `/k` -> yes, it runs its inline command and THEN
+    reads stdin (`cmd //k <<EOF` / `echo hi> m.txt` / `exit` created the file); `/c` and
+    `/r` -> no, the child gets stdin -- unless that child is ITSELF a cmd that reads it
+    (`echo ... | cmd //c cmd` ran the piped line)."""
+    for i, t in enumerate(toks[1:], 1):
+        if _CMD_KEEP_SWITCH.fullmatch(t):
+            return True
+        if _CMD_RUN_SWITCH.fullmatch(t):
+            rest = toks[i + 1:]
+            return bool(rest) and _verb_name(rest[0]) == "cmd" and _cmd_toks_read_stdin(rest)
+    return True
 
 
 def _cmd_reads_stdin(sg: str) -> bool:
-    """A cmd.exe with no /c /k /r: its program is its stdin (E4)."""
+    """A cmd.exe whose program is (partly) its stdin: see _cmd_toks_read_stdin."""
     toks = tokens_of(sg)
     k = next((i for i, t in enumerate(toks) if _verb_name(t) == "cmd"), None)
-    return k is not None and not any(_CMD_RUN_SWITCH.fullmatch(t) for t in toks[k + 1:])
+    return k is not None and _cmd_toks_read_stdin(toks[k:])
 
 
 def cmd_heredoc_bodies(cmd: str) -> list[str]:
@@ -1848,8 +1943,24 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
                          # remove | xargs python x4refguard.py` (xargs supplies it), or a
                          # variable/substitution. An action the guard cannot read is asked.
                          or "xargs" in toks[:i]
-                         or any(has_unresolved(a) for a in toks[i + 1:])):
+                         # FX-G4 / H9, MEASURED in the corpus replay: EVERY argument was
+                         # tested, so `x4refguard.py apply --toolkit "$X4_TOOLKIT"` and
+                         # `status --toolkit "$W"` ASKED (6 of 6 new hits in history).
+                         # Only the ACTION position can name the action.
+                         or has_unresolved(_refguard_action(toks[i + 1:]))):
                 return True
+    if v in ("takeown", "takeown.exe"):
+        # FX-G4 / reviewer H-M5, MEASURED: `takeown /f <ref> /r` was allowed. Taking
+        # OWNERSHIP lets the new owner rewrite the ACL, deny included -- the same lift as
+        # icacls /setowner. `/f <path>` names it; `/r` walks into it from an ancestor.
+        rec = any(re.fullmatch(r"/{1,2}r", t) for t in toks)
+        raw = tokens_of(seg)
+        for i, t in enumerate(toks[:-1]):
+            if re.fullmatch(r"/{1,2}f", t):
+                r = join_cwd(cwd, subst_root_var(resolve(raw[i + 1], assigns), roots))
+                if under(r, ref) or (rec and contains_root(r, ref)):
+                    return True
+        return False
     if "icacls" not in v:                # an unset ref: under()/contains_root() are False for ""
         return False
     # EVERY ACL-modifying switch, not only /remove and /reset (reviewer E7, MEASURED): an
@@ -1867,6 +1978,12 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
         if under(r, ref) or (walks and contains_root(r, ref)):
             return True
     return False
+
+
+def _refguard_action(args: list) -> str:
+    """x4refguard.py's ACTION: its first argument that is not an option (the top-level
+    parser takes no options of its own). '' when there is none."""
+    return next((a for a in args if not a.startswith("-")), "")
 
 
 #: icacls switches that change an ACL in a way that can lift a deny (E7), and those that take
@@ -2531,23 +2648,33 @@ _AS_PATH = re.compile(r"(?:POSIX\s+file|POSIX\s+path|file|folder|alias|item|disk
                       r"\"([^\"]+)\"", re.IGNORECASE)
 
 
+def _url_path(o: str) -> str:
+    """A `file://` URL's PATH, percent-DECODED (FX-G4 / reviewer H-M3, MEASURED: `gio trash
+    "file://.../X4%20Foundations"` only advised -- `%20` hid the space, so the operand was
+    a sibling of the game root, not the root). Any other operand unchanged."""
+    if not _FILE_URL.match(o):
+        return o
+    from urllib.parse import unquote
+    return unquote(_FILE_URL.sub("", o))
+
+
 def trash_paths(seg: str) -> list[str]:
     """Operands a move-to-trash command takes out of their folder (see _TRASH_VERBS)."""
     v = verb(seg)
     if v in _TRASH_VERBS:
-        return [_FILE_URL.sub("", o) for o in _operands(seg)]
+        return [_url_path(o) for o in _operands(seg)]
     ops = _operands(seg)
     if v == "gio" and ops:
         if ops[0] in _GIO_DELETE:
-            return [_FILE_URL.sub("", o) for o in ops[1:]]
+            return [_url_path(o) for o in ops[1:]]
         if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
-            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+            return [_url_path(o) for o in ops[1:-1]]
         return []
     if _KIOCLIENT.match(v or "") and ops:
         if ops[0] in _KIO_DELETE:
-            return [_FILE_URL.sub("", o) for o in ops[1:]]
+            return [_url_path(o) for o in ops[1:]]
         if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
-            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+            return [_url_path(o) for o in ops[1:-1]]
         return []
     if v == "osascript":
         toks = tokens_of(seg)
@@ -2784,6 +2911,13 @@ def git_discards_named_files(seg):
     return _git_destructive(seg, {"checkout", "restore"})
 
 
+#: `GIT_CONFIG_COUNT=`, `GIT_CONFIG_KEY_0=`, `GIT_CONFIG_PARAMETERS=`, `GIT_CONFIG=`,
+#: `GIT_CONFIG_GLOBAL=` ... -- an assignment (or PowerShell `$env:` one) to any of them.
+_GIT_CONFIG_ENV_SET = re.compile(r"(?<![A-Za-z0-9_])GIT_CONFIG[A-Z0-9_]*\s*=", re.I)
+#: Set per facts() call: does this command set git config through the environment?
+_GIT_ENV_CONFIG = [False]
+
+
 def _git_destructive(seg, wanted, deep=False):
     r"""The directory a destructive git subcommand would act on, or [].
 
@@ -2843,11 +2977,15 @@ def _git_destructive(seg, wanted, deep=False):
                 worktree = toks[i + 1]
             elif t == "--git-dir":
                 gitdirs.append(_gitdir_parent(toks[i + 1]))
+            elif t == "--config-env" and "requireforce" in toks[i + 1].lower():
+                forced = True
             elif t == "-c" and toks[i + 1].lower().split("=", 1)[0] == "clean.requireforce":
                 # git's false spellings; a bare `-c clean.requireForce` means true.
                 kv = toks[i + 1].lower().split("=", 1)
                 forced = len(kv) == 2 and kv[1] in ("false", "no", "off", "0", "")
             skip.add(i + 1)
+        elif t.startswith("--config-env=") and "requireforce" in t.lower():
+            forced = True
         elif t.startswith("--work-tree="):
             worktree = t.split("=", 1)[1]
         elif t.startswith("--git-dir="):
@@ -2856,6 +2994,13 @@ def _git_destructive(seg, wanted, deep=False):
             worktree = t.split("=", 1)[1]
         elif t.startswith("GIT_DIR="):
             gitdirs.append(_gitdir_parent(t.split("=", 1)[1]))
+    # FX-G4 / reviewer H6, MEASURED: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=clean.requireForce
+    # GIT_CONFIG_VALUE_0=false git -C <game> clean -dx` (and GIT_CONFIG_PARAMETERS) DELETED
+    # with no -f and was allowed. git config set through the environment -- as a prefix or
+    # assigned/exported anywhere in the command -- may switch requireForce off, and its
+    # value cannot always be read (a variable, a file), so such a clean counts as forced.
+    if _GIT_ENV_CONFIG[0] or any(_GIT_CONFIG_ENV_SET.match(t) for t in toks):
+        forced = True
     # THE VERB IS NOT ALWAYS toks[0]. `verb()` skips leading VAR=value assignments,
     # this scan did not, and `toks[1:]` therefore started ON the `git` token when a
     # prefix was present -- so `sub` became "git", matched nothing in `wanted`, and
@@ -3464,6 +3609,102 @@ def _drop_redirects(toks: list[str]) -> list[str]:
     return out
 
 
+_PRINTF_ESC = {"n": chr(10), "t": chr(9), chr(92): chr(92), "a": "", "r": "", "v": "", "f": ""}
+
+
+def _printf_render(fmt: str, args: list):
+    """printf's output for `%s`/`%b`/`%%` formats with the common escapes, or None when the
+    format holds anything else (a width, `%d`, `%q`...) -- text this cannot reproduce."""
+    out, ai = [], 0
+    while True:
+        i = 0
+        while i < len(fmt):
+            c = fmt[i]
+            if c == chr(92) and i + 1 < len(fmt):
+                e = _PRINTF_ESC.get(fmt[i + 1])
+                if e is None:
+                    return None
+                out.append(e)
+                i += 2
+            elif c == "%":
+                d = fmt[i + 1:i + 2]
+                if d == "%":
+                    out.append("%")
+                elif d in ("s", "b"):
+                    out.append(args[ai] if ai < len(args) else "")
+                    ai += 1
+                else:
+                    return None
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+        if ai == 0 or ai >= len(args):
+            return "".join(out)
+
+
+def _echo_printf_program(prev: str) -> list:
+    """The program an `echo`/`printf` segment prints into a piped shell (H7): what it
+    PRINTS, plus its words exactly as written. [] after recording an inability when the
+    printf format cannot be reproduced."""
+    toks = tokens(prev)
+    vt = _verb_token(prev)
+    k = next((i for i, (t, _q) in enumerate(toks) if t == vt), 0)
+    args = [t for t, _q in toks[k + 1:]]
+    args = _drop_redirects(args)
+    if verb(prev) == "echo":
+        while args and re.fullmatch(r"-[neE]+", args[0]):
+            args = args[1:]
+        printed = " ".join(args)
+    else:
+        if args[:1] == ["--"]:
+            args = args[1:]
+        printed = _printf_render(args[0], args[1:]) if args else ""
+        if printed is None:
+            _UNTRANSLATED.append("a printf whose format the guard cannot reproduce, "
+                                 "piped into a shell")
+            return []
+    out = [ln for ln in printed.split(chr(10)) if ln.strip()]
+    m = re.search(re.escape(vt), prev) if vt else None
+    raw = prev[m.end():].strip() if m else ""
+    if raw:
+        out.append(raw)
+    return out
+
+
+def _procsub_program(seg: str) -> list:
+    """FX-G4 / reviewer H8, MEASURED: `bash <(echo rm -rf "<game>")`, `source <(...)` and
+    `. <(...)` were ALLOWED. A process substitution that is a shell's SCRIPT operand (its
+    first non-option word) is executed text: what an echo/printf inside it prints is the
+    program (as for `echo ... | bash`, H7); any other producer is unreadable -> the
+    inability path. A `<(...)` that is an argument to a script, or to any other verb
+    (`diff <(a) <(b)`), is not a program."""
+    toks = tokens(seg)
+    if not toks or _verb_name(verb(seg)) not in _SHELL_SINKS:
+        return []
+    vt = _verb_token(seg)
+    k = next((i for i, (t, _q) in enumerate(toks) if t == vt), None)
+    if k is None:
+        return []
+    first = next(((t, q) for t, q in toks[k + 1:] if q or not t.startswith("-")), None)
+    if not first or first[1] or not first[0].startswith("<("):
+        return []
+    mask = _quote_mask(seg)
+    at = next((i for i in range(len(seg) - 1)
+               if seg[i:i + 2] == "<(" and not mask[i]), -1)
+    close = _match_paren(seg, at + 1) if at >= 0 else -1
+    if close < 0:
+        _UNTRANSLATED.append("a process substitution run as a shell script, unreadable")
+        return []
+    inner = seg[at + 2:close]
+    segs = segments(inner)
+    if segs and verb(segs[-1]) in ("echo", "printf"):
+        return _echo_printf_program(segs[-1])
+    _UNTRANSLATED.append("a process substitution run as a shell script, fed by something "
+                         "the guard cannot read")
+    return []
+
+
 def _here_string(seg: str) -> str:
     """The operand of a `<<<` here-string, or ''."""
     toks = [t for t, _q in tokens(seg)]
@@ -3856,22 +4097,27 @@ def _windows_carrier(seg: str, cmd: str, prev=None) -> list:
         return []
     toks = toks[k:]
     if _verb_name(toks[0]) == "cmd":
+        inline = []
         for i, t in enumerate(toks[1:], 1):
             # /R is cmd's older synonym of /C (finding 3).
             if re.fullmatch(r"/{1,2}[cCkKrR]", t):
                 rest = [resolve(x, _text_assignments(cmd)) for x in toks[i + 1:]]
-                return [cmd_to_sh(rest)] if rest else []
+                inline = [cmd_to_sh(rest)] if rest else []
+                break
+        if not _cmd_toks_read_stdin(toks):
+            return inline
         # NO /c: cmd reads its PROGRAM FROM STDIN, one command per line (FX-G2 / reviewer E4,
         # MEASURED: `echo rd /s /q "<ref>" | cmd` and `cmd <<EOF` were ALLOWED, and Git Bash
         # runs both). Read exactly as a PowerShell host's stdin is (_ps_stdin_program): an
         # echo/printf or a here-string is translated; a file or any other producer is
-        # UNREADABLE and reported; the heredoc form is cmd_heredoc_bodies' job.
+        # UNREADABLE and reported; the heredoc form is cmd_heredoc_bodies' job. FX-G4 / H1:
+        # `/k` runs its inline command AND THEN reads stdin, so both are returned.
         texts, unreadable = _ps_stdin_program(seg, prev)
         if unreadable:
             _UNTRANSLATED.append("a cmd reading its program from stdin, fed by something "
                                  "the guard cannot read")
-            return []
-        return [cmd_to_sh([ln]) for t_ in texts for ln in t_.split(chr(10)) if ln.strip()]
+            return inline
+        return inline + [cmd_to_sh([ln]) for t_ in texts for ln in t_.split(chr(10)) if ln.strip()]
     kind, payload = _ps_host_payload(toks)
     if kind == "cmd":
         text = resolve(payload, _text_assignments(cmd))
@@ -3931,6 +4177,13 @@ def _inner_commands(cmd: str) -> list[str]:
                 for piece in lit:
                     if piece.strip() and piece not in ("%s", "%s" + chr(92) + "n"):
                         out.append(piece)
+                # FX-G4 / reviewer H7, MEASURED: `echo rm -rf "<game>" | bash` was ALLOWED
+                # -- only QUOTED words were taken, and here the program is the unquoted
+                # words. The shell runs what the producer PRINTS, so that is rebuilt
+                # (echo: its words joined; printf: its format applied) -- and the producer's
+                # words AS WRITTEN are added too, so a quoted path with a space stays one
+                # operand. A printf format this cannot reproduce is the inability path.
+                out.extend(_echo_printf_program(prev))
         # `bash <<< '<cmd>'` -- the here-string IS the program. A SEPARATE `if`, not an
         # arm of the chain below: this lived as an `elif` for one measurement and never
         # ran, because `bash` matches the `-c` arm first and that arm appends nothing when
@@ -3940,6 +4193,7 @@ def _inner_commands(cmd: str) -> list[str]:
             hs = _here_string(seg)
             if hs:
                 out.append(hs)
+        out.extend(_procsub_program(seg))
         v = verb(seg)
         toks = tokens(seg)
         if v in _SHELLS:
@@ -4109,6 +4363,9 @@ def facts(payload: dict, roots: dict) -> dict:
     # treating one as a separator cost every verb-keyed rule its operand (C1).
     spliced = join_continuations(cmd)
     body = strip_comments(strip_heredocs(spliced))
+    # FX-G4 / reviewer H6: git config from the ENVIRONMENT (see _git_destructive).
+    _GIT_ENV_CONFIG[0] = bool(_GIT_CONFIG_ENV_SET.search(body)
+                              or _GIT_CONFIG_ENV_SET.search(inp.get("command") or ""))
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
     extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
@@ -4183,7 +4440,14 @@ def facts(payload: dict, roots: dict) -> dict:
     # #36). The root test is on THIS SEGMENT'S OWN OPERANDS, never on a root
     # appearing anywhere in the command -- that conjunction over the whole string is
     # the shape four false positives came from in one day.
-    def _subst_verb_at_root(seg):
+    def _subst_verb(seg):
+        """Is this segment's command name a substitution -- written in place, or (FX-G4 /
+        reviewer G-OUT, MEASURED: `x=$(printf rm); $x -rf "<reference>"` was ALLOWED while
+        `x=rm; $x` denied) through a variable this command assigned a substitution to?"""
+        t = _verb_token(seg)
+        return bool(t) and bool(_SUBST.search(t) or _SUBST.search(resolve(t, assigns)))
+
+    def _subst_verb_at_root(seg, d=""):
         t = _verb_token(seg)
         # `_SUBST.search`, NOT startswith. MEASURED 2026-09-09, by the seed this rule
         # shipped without: `/usr/bin/$(which rm) -rf <game>` was a DENY -> ALLOW. A
@@ -4194,15 +4458,19 @@ def facts(payload: dict, roots: dict) -> dict:
         # paths answering one question, the same shape as the verb-resolver defects
         # above. The narrow conjunct is untouched: a ROOT operand in this segment is
         # still required, which is what priced this rule at 4 hits in 28,989.
-        if not t or not _SUBST.search(t):
+        if not _subst_verb(seg):
             return False
         for o in _operands(seg):
             r = resolve(o, assigns)
             if any(v and is_root(r, v) for v in roots.values()):
                 return True
+            # ...and anything INSIDE reference/, whose every delete and write is a hard
+            # block (FX-G4 / G-OUT): `$(echo rm) -rf <reference>/libraries` was ALLOWED.
+            if roots.get("reference") and under(join_cwd(d, r) if d else r, roots["reference"]):
+                return True
         return False
 
-    verb_unresolved = any(_subst_verb_at_root(s) for s, _ in seg_cwd)
+    verb_unresolved = any(_subst_verb_at_root(s, d) for s, d in seg_cwd)
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
@@ -4251,7 +4519,7 @@ def facts(payload: dict, roots: dict) -> dict:
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
     gitwipe_t, gitdiscard_t, gitwipe_pairs = [], [], []
-    scoped_rm_t, mod_t = [], []
+    scoped_rm_t, mod_t, subst_rm_t = [], [], []
     search_seg, git_all = False, False
     for (s, c_cwd), prev, c_old in zip(seg_cwd, seg_prev, unseeded):
         rm_t += prep(rm_paths(s), c_cwd, c_old)
@@ -4265,7 +4533,13 @@ def facts(payload: dict, roots: dict) -> dict:
         # A FILTERED find-delete removes entries INSIDE its tree: it feeds every in-tree
         # delete rule, and never the whole-install hard block (see find_scoped_deletes).
         scoped_rm_t += prep(find_scoped_deletes(s), c_cwd, c_old)
-        # truncate / dd of= are truncating writes, judged as `>` is (see clobber_targets).
+        # A command name that arrives by substitution MAY be rm: its operands feed the X4
+        # directory delete ADVISORY (FX-G4 / BLIND-SPOTS F183, MEASURED: `$(echo rm) -rf
+        # <game>/libraries` was a plain allow where `rm -rf` advises). Advisory only; an
+        # operand that IS a root is denied by verb_unresolved above.
+        if _subst_verb(s):
+            subst_rm_t += prep(_operands(s), c_cwd, c_old)
+        # truncate / dd of=are truncating writes, judged as `>` is (see clobber_targets).
         redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd, c_old, False)]
         mv_src += prep(move_sources(s), c_cwd, c_old)
         copy_t += prep(copy_dests(s), c_cwd, c_old)
@@ -4507,7 +4781,8 @@ def facts(payload: dict, roots: dict) -> dict:
         "writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]
                                 + sed_t + out_t + mod_t, "reference"),
         "rm_in_x4_dir": any(hit(rm_t + mv_src + scoped_rm_t, k, conservative=True) for k in
-                            ("game", "profile", "mods", "toolkit")) or rm_named_game,
+                            ("game", "profile", "mods", "toolkit")) or rm_named_game
+                        or hit(subst_rm_t, "game"),
         "rm_saves": hit(rm_t + mv_src + scoped_rm_t, "saves", conservative=True),
         # The PROFILE keeps a confirmation when rm_in_x4_dir became an advisory (user,
         # 2026-10-02): a bad content.xml or save="1" can damage saves.
