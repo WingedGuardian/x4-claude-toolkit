@@ -377,7 +377,15 @@ def _literal_cd(raw: str | None) -> str | None:
     # and `'a'$X'b'` also start and end with a quote, but are concatenations the shell expands.
     if re.fullmatch(r"'[^']*'", raw):
         return raw[1:-1]
-    cd = raw[1:-1] if raw[0] == '"' and raw[-1:] == '"' and len(raw) > 1 else raw
+    # ...and ONE fully double-quoted word (still expanded below). ANY other word holding a quote
+    # is a concatenation the shell joins (FX-G6 / reviewer K I1, MEASURED: `'<REF>'/libraries`
+    # and `"<REF>"'/sub'` were taken WITH their quotes -- a path under no root -- and a Codex /
+    # OpenCode shell patch wrote into reference/ unjudged): refused, never dequoted by guess.
+    cd = raw[1:-1] if re.fullmatch(r'"[^"]*"', raw) else raw
+    if cd is raw and ("'" in raw or '"' in raw):
+        raise PatchParseError(f"the patch runs after `cd {raw}`, a directory spelled with mixed "
+                              "quoting the guard does not reassemble; cd to the path as ONE quoted "
+                              "word, or pass it as the patch tool's own directory")
     if _EXPANDS.search(cd):
         raise PatchParseError(f"the patch runs after `cd {raw}`, a directory the shell expands "
                               "(a variable, `~` or a substitution) and the guard cannot; cd to the "
