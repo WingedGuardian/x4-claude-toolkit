@@ -20,7 +20,8 @@ Exit codes:
      inert) number >= --min-cases (default 80)
   1  at least one case disagrees, or the adapter's output was unreadable (each one is listed)
   2  cannot evaluate: bad or incomplete profile, no adapter command, toolkit / .claude/hooks /
-     a required program missing, the dump harness failed, a reference verdict unreadable, a
+     a required program missing, the dump harness failed, a reference verdict unreadable or
+     ABSENT (the reference hook could not start, timed out, or exited non-zero), a
      reference CONTROL (an extra case's `expect`) failed, or the extra cases were wanted (no
      --no-extras) and could not be built
   3  nothing, or too little, examined: replayed == 0, or fewer than --min-cases replayed cases
@@ -56,6 +57,9 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gitbash import find_bash  # noqa: E402  THE bash resolver (scripts/gitbash.py -> x4guard)
 
 KINDS = ("shell-bash", "shell-powershell", "edit", "write")
 RC_OK, RC_DISAGREE, RC_ERROR, RC_NOTHING = 0, 1, 2, 3
@@ -309,6 +313,15 @@ def summarise(results, n_total, buckets, gaps, min_cases) -> tuple:
              + ", ".join(f"{k}={v}" for k, v in sorted(buckets.items()))]
     for kind, why in sorted(gaps.items()):
         lines.append(f"GAP: {kind} is not covered by this adapter ({why}); its cases were not replayed")
+    # A reference that gave NO verdict (FX-G3): that case was not checked, so it can neither agree
+    # nor disagree, and the run cannot pass -- whatever the adapter said about it.
+    broken = [r for r in results if r["reference"] in ("error", "unreadable")]
+    if broken:
+        for r in broken:
+            lines.append(f"REFERENCE ERROR {r['label']} [{r['kind']}]: the guards gave no verdict -- "
+                         f"{r.get('reference_why') or r['reference']}"[:600])
+        lines.append(f"CANNOT EVALUATE: {len(broken)} of {len(results)} replayed case(s) have no reference verdict")
+        return RC_ERROR, "\n".join(lines)
     bad = [r for r in results if r["reference"] != r["adapter"]]
     if bad:
         for r in bad:
@@ -348,11 +361,11 @@ def _native_path(p: str) -> str:
 
 
 def _bash():
-    """Git Bash, never the WSL stub (it cannot run a Windows-path script)."""
-    cand = os.environ.get("X4_BASH") or shutil.which("bash.exe") or shutil.which("bash")
-    if cand and "system32" in cand.replace("/", "\\").lower():
-        return None
-    return cand
+    """Git Bash, never the WSL stub (it cannot run a Windows-path script). ONE RESOLVER: this
+    asks scripts/gitbash.py, which asks the guards' own x4guard.resolve_bash(). A second resolver
+    lived here (X4_BASH > which(bash.exe) > which(bash), stub test by substring) and could pick a
+    different bash than the guards it replays (FX-G3, v4.0.0 delta review)."""
+    return find_bash()
 
 
 def _pwsh():
@@ -459,23 +472,56 @@ def _hook_decision(out: str) -> str:
     return "advise" if hso.get("additionalContext") else "allow"
 
 
-def reference_verdict(row: dict, root: Path) -> str:
-    """What the guards decide: the row's Claude hook on its Claude-shaped payload, now, in the
-    row's env and cwd. A deny/ask is re-run under X4_GUARD_CHECK=1 -- the guards' own "checked
-    nothing" protocol, where such paths exit 2 -- so "inert" comes from the guards, not from a
-    phrase list that can drift."""
+REFERENCE_TIMEOUT_S = 120
+
+
+def _run_reference(bash, hook: Path, data: bytes, env: dict, cwd: str):
+    """(CompletedProcess, None) or (None, why): a reference hook that cannot start, or does not
+    answer in time, gave NO verdict -- it must never decode as the empty-stdout "allow"."""
+    if not bash:
+        return None, "no bash to run the reference hook with"
+    try:
+        return subprocess.run([bash, str(hook)], input=data, capture_output=True, env=env, cwd=cwd,
+                              timeout=REFERENCE_TIMEOUT_S), None
+    except subprocess.TimeoutExpired:
+        return None, f"the reference hook did not answer within {REFERENCE_TIMEOUT_S}s"
+    except OSError as e:
+        return None, f"the reference hook could not start: {e}"
+
+
+def reference_verdict_detail(row: dict, root: Path) -> tuple:
+    """(verdict, why). What the guards decide: the row's Claude hook on its Claude-shaped payload,
+    now, in the row's env and cwd. A deny/ask is re-run under X4_GUARD_CHECK=1 -- the guards' own
+    "checked nothing" protocol, where such paths exit 2 -- so "inert" comes from the guards, not
+    from a phrase list that can drift.
+
+    "error" (FX-G3, v4.0.0 delta review): the hook could not start, timed out, or EXITED NON-ZERO.
+    A Claude hook allows by exiting 0 with empty stdout; a missing hook (bash exit 127) or a crash
+    (exit 1, no output) also has empty stdout, and was read as a CHECKED allow. Claude Code does
+    not act on the stdout of a non-zero exit either, so no non-zero exit is a reference verdict."""
     bash = _bash()
     hook = Path(root) / ".claude" / "hooks" / row["hook"]
     data = json.dumps(row["payload"]).encode("utf-8")
     env, cwd = _env(row), _row_cwd(row, Path(root))
-    r = subprocess.run([bash, str(hook)], input=data, capture_output=True, env=env, cwd=cwd, timeout=120)
+    r, why = _run_reference(bash, hook, data, env, cwd)
+    if r is None:
+        return "error", why
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace").strip()[-300:]
+        return "error", f"the reference hook exited {r.returncode} (no verdict)" + (f"; stderr: {err}" if err else "")
     d = _hook_decision(r.stdout.decode("utf-8", "replace"))
     if d in ("ask", "deny"):
-        c = subprocess.run([bash, str(hook)], input=data, capture_output=True, cwd=cwd,
-                           env=dict(env, X4_GUARD_CHECK="1"), timeout=120)
+        c, why = _run_reference(bash, hook, data, dict(env, X4_GUARD_CHECK="1"), cwd)
+        if c is None:
+            return "error", f"the X4_GUARD_CHECK re-run: {why}"
         if c.returncode == 2:
-            return "inert"
-    return d
+            return "inert", ""
+    return d, ""
+
+
+def reference_verdict(row: dict, root: Path) -> str:
+    """The verdict alone; see reference_verdict_detail."""
+    return reference_verdict_detail(row, root)[0]
 
 
 def _placeholders(root: Path, row) -> dict:
@@ -560,11 +606,11 @@ def replay(rows, profile, argv, root, workers=4) -> list:
     run_dir = neutral_run_dir(root)
 
     def one(row):
-        ref = reference_verdict(row, root)
+        ref, ref_why = reference_verdict_detail(row, root)
         got, text = adapter_verdict(row, profile, argv, root, run_dir)
         label = row.get("label") or row.get("id")
         return {"label": f"#{row['n']} {label}" if row.get("n") else label, "kind": row.get("kind") or classify(row),
-                "hook": row.get("hook"), "reference": ref, "adapter": got, "text": text}
+                "hook": row.get("hook"), "reference": ref, "reference_why": ref_why, "adapter": got, "text": text}
     try:
         with ThreadPoolExecutor(max(1, int(workers))) as ex:
             return list(ex.map(one, todo))
@@ -702,7 +748,9 @@ def main(argv=None) -> int:
         if not a.no_extras:
             say(f"extras: {len(extras)} neutral case(s)")
         for r in extras:                  # the reference CONTROL: the guards must still say `expect`
-            got = reference_verdict(r, root)
+            got, why = reference_verdict_detail(r, root)
+            if got == "error":
+                return refuse(f"reference control {r['id']}: the guards gave no verdict -- {why}")
             if got != r["expect"]:
                 return refuse(f"reference control {r['id']}: the guards say {got}, the case expects "
                               f"{r['expect']} -- the guard policy changed or the case is wrong; "
@@ -718,6 +766,11 @@ def main(argv=None) -> int:
         unreadable_ref = [r["label"] for r in results if r["reference"] == "unreadable"]
         if unreadable_ref:
             return refuse(f"the guards' own verdict was unreadable for: {', '.join(map(str, unreadable_ref[:20]))}")
+        no_ref = [r for r in results if r["reference"] == "error"]
+        if no_ref:
+            return refuse(f"the guards gave NO verdict for {len(no_ref)} case(s) (a reference hook that could "
+                          "not run is not an allow): " + "; ".join(f"{r['label']}: {r['reference_why']}"
+                                                                 for r in no_ref[:10]))
         buckets = bucket_counts(rows, len(results), prof)
         if buckets.get(WINDOWS_PATH_DIALECT):
             say(f"not replayed: {buckets[WINDOWS_PATH_DIALECT]} case(s) whose file path is spelled with "
