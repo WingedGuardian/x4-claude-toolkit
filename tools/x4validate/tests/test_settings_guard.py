@@ -84,6 +84,48 @@ def test_edit_is_judged_on_the_RESULTING_file(sandbox):
     assert d == "deny"
 
 
+_HOOKCMD = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+    {"type": "command", "command": "bash .claude/hooks/protect-bash.sh"}]}]}}
+
+
+@needs_bash
+def test_X4_GUARD_ANYWHERE_in_the_file_is_denied_not_only_in_env(sandbox):
+    """FX-G4 / reviewer H4a, MEASURED: `X4_GUARD=off bash .../protect-bash.sh` as a hooks COMMAND
+    switched that hook off and was allowed -- only `env` was read. USER DECISION: block X4_GUARD
+    there. Twins: the same hooks edit without the key, and a write of an ordinary hook command."""
+    _tmp, _tk, env, s = sandbox
+    for key in ("X4_GUARD=off", "X4_GUARD_CHECK=", "x4_guard=off"):
+        bad = json.loads(json.dumps(_HOOKCMD))
+        bad["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = key + " bash .claude/hooks/protect-bash.sh"
+        d, why = _hook(env, "protect-files.sh", {"tool_name": "Write", "tool_input": {
+            "file_path": str(s), "content": json.dumps(bad)}})
+        assert d == "deny" and "X4_GUARD" in why, (key, d, why)
+    d, _ = _hook(env, "protect-files.sh", {"tool_name": "Write", "tool_input": {
+        "file_path": str(s), "content": json.dumps(_HOOKCMD)}})
+    assert d == "allow"
+    # an Edit putting it into a hook command string
+    s.write_text(json.dumps(_HOOKCMD, indent=2), encoding="utf-8")
+    d, _ = _hook(env, "protect-files.sh", {"tool_name": "Edit", "tool_input": {
+        "file_path": str(s), "old_string": '"bash .claude', "new_string": '"X4_GUARD=off bash .claude'}})
+    assert d == "deny"
+    d, _ = _hook(env, "protect-files.sh", {"tool_name": "Edit", "tool_input": {
+        "file_path": str(s), "old_string": '"bash .claude', "new_string": '"FOO=1 bash .claude'}})
+    assert d == "allow"
+
+
+@needs_bash
+def test_an_edit_whose_old_string_does_not_apply_is_judged_on_its_new_text(sandbox):
+    """FX-G4 / reviewer H-M1: an Edit whose old_string is not in the file as read here was ALLOWED
+    whatever it wrote -- the file the tool sees may differ. Twin: the same miss without the key."""
+    _tmp, _tk, env, s = sandbox
+    d, _ = _hook(env, "protect-files.sh", {"tool_name": "Edit", "tool_input": {
+        "file_path": str(s), "old_string": "NOT-IN-FILE", "new_string": '"X4_GUARD": "off"'}})
+    assert d == "deny"
+    d, _ = _hook(env, "protect-files.sh", {"tool_name": "Edit", "tool_input": {
+        "file_path": str(s), "old_string": "NOT-IN-FILE", "new_string": '"OTHER": "3"'}})
+    assert d == "allow"
+
+
 @needs_bash
 def test_an_unreadable_result_that_could_spell_it_is_denied(sandbox):
     """Cannot tell -> DENY with an actionable reason (the user's no-prompt rule), never ask."""
