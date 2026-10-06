@@ -781,8 +781,11 @@ NOT_A_RULE = {"background"}
 
 
 def test_sources(text: str) -> dict:
-    """{test METHOD name: its own source, plus its class's non-test body (FACT/KEYS
-    attributes)}. A name defined in two classes gets both sources.
+    """{"Class.method" (a module-level test: its bare name): its own source, plus its class's
+    non-test body (FACT/KEYS attributes)}. Keyed exactly as failed_tests() reports a failure
+    and test_index()/qualify() name a target (FX-G5 / reviewer J2 item 8): keyed by the bare
+    METHOD, two classes sharing a name POOLED their sources, so a red test in one class was
+    credited with the predicate its namesake in another class mentions.
 
     For the silent? column (reviewer E10, v4.0.0 delta review): pinning a predicate TRUE broke
     the catch-all `test_TWIN_a_read_is_not_a_write` -- which asserts EVERY fact is false -- for
@@ -804,12 +807,17 @@ def test_sources(text: str) -> dict:
                             if not (isinstance(n, ast.FunctionDef) and n.name.startswith("test_")))
             for n in node.body:
                 if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"):
-                    out[n.name] = out.get(n.name, "") + src(n) + attrs
+                    out[f"{node.name}.{n.name}"] = src(n) + attrs
     return out
 
 
 def names_predicate(source: str, key: str) -> bool:
     return ('"%s"' % key) in source or ("'%s'" % key) in source
+
+
+def credited(failed: set, srcs: dict, key: str) -> set:
+    """The failed tests ("Class.method") whose OWN source names predicate *key* (E10)."""
+    return {t for t in failed if names_predicate(srcs.get(t, ""), key)}
 
 
 def run(work: Path):
@@ -985,10 +993,10 @@ def main() -> int:
                 _rc, f, r = run(work)
                 if val == "True":
                     # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
-                    # `f` holds "Class.method" (FX-G3) while srcs is keyed by METHOD: looking up
-                    # the qualified name found no source, so EVERY predicate read NONE (FX-G4,
-                    # MEASURED: 32 of 32 -- present since the two patches met at e39f675).
-                    f = {t for t in f if names_predicate(srcs.get(t.rsplit(".", 1)[-1], ""), k)}
+                    # `f` holds "Class.method" (FX-G3), and so does srcs (FX-G5 / J2 item 8): a
+                    # bare-method lookup first found nothing (FX-G4, 32 of 32 NONE), then pooled
+                    # the sources of same-named tests in different classes.
+                    f = credited(f, srcs, k)
                 row.append("BROKE" if r < 20 else ("probed" if f else "*** NONE ***"))
             if "*** NONE ***" in row or "BROKE" in row:
                 gaps += 1
