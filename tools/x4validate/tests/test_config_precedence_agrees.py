@@ -515,7 +515,34 @@ SPELLINGS = [
     ("missing-dot",       "{tk}/nope.env.",               False, False),
     ("a-directory",       "{tk}/sub/",                    False, False),
     ("dot-only",          ".",                            False, False),
+    # FX-G5 / reviewer J2 item 4 (MEASURED: bash read nothing, Python read the file): `.` and
+    # `..` components are normalised LEXICALLY, and a `::$DATA` suffix (Windows: the file's own
+    # data stream) dropped, the same way in both halves.
+    ("dot-component-trail", "x4-paths.env/.",             True,  False),
+    ("dot-components",    "./x4-paths.env/./",            True,  False),
+    ("dotdot-then-dot",   "sub/../x4-paths.env/.",        True,  False),
+    ("abs-trail-dot",     "{tk}/x4-paths.env/.",          True,  False),
+    ("data-stream",       "x4-paths.env::$DATA",          True,  True),
+    ("data-stream-case",  "{tk}/x4-paths.env::$data",     True,  True),
+    # twins: the same moves never invent a file
+    ("missing-dot-comp",  "sub/../nope.env/.",            False, False),
+    ("dotdot-escapes",    "sub/../../x4-paths.env/.",     False, False),
+    ("data-stream-missing", "nope.env::$DATA",            False, True),
 ]
+
+
+def test_FXG5_python_names_the_file_by_the_SAME_spelling_bash_takes():
+    """The agreement rows above compare WHETHER a file is read; this pins WHICH spelling the
+    Python half reports (x4doctor and the foreign-config check compare it to a toolkit)."""
+    from x4validate import _paths
+
+    sp = _paths.config_spelling
+    assert sp("sub/../x4-paths.env/.") == pathlib.Path("x4-paths.env")
+    assert sp("./x4-paths.env/./") == pathlib.Path("x4-paths.env")
+    if _WIN:
+        assert sp("x4-paths.env::$DATA") == pathlib.Path("x4-paths.env")
+        assert sp("C:/t/x4-paths.env::$Data") == pathlib.Path("C:/t/x4-paths.env")
+        assert sp("x4-paths.env:other") == pathlib.Path("x4-paths.env:other")   # twin: a NAMED stream
 
 
 @pytest.mark.parametrize("row", SPELLINGS, ids=[r[0] for r in SPELLINGS])

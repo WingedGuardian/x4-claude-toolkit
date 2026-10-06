@@ -378,6 +378,21 @@ def foreign_toolkit_refusal(action: str) -> str | None:
             f"(or fix X4_TOOLKIT).")
 
 
+#: `<file>::$DATA` -- the file's own unnamed data stream to Win32 (any case).
+_DATA_STREAM = re.compile(r"::\$data$", re.IGNORECASE)
+
+
+def config_spelling(value: str) -> Path:
+    """The file an explicit `$X4_CONFIG` names, spelled as `_x4-env.sh` spells it (FX-G5 /
+    reviewer J2 item 4): a Windows `::$DATA` suffix dropped, then `.` and `..` components
+    resolved LEXICALLY (normpath) -- the bash loader found no file for `x4-paths.env/.`,
+    `sub/../x4-paths.env/.` or `x4-paths.env::$DATA` while this module read one."""
+    v = native(value)
+    if _IS_WINDOWS:
+        v = _DATA_STREAM.sub("", v)
+    return Path(os.path.normpath(v)) if v else Path(v)
+
+
 def _locate_config() -> tuple[Path | None, str, Path | None]:
     """`(file read or None, state, the OTHER location)` by the module docstring's rule.
 
@@ -387,7 +402,7 @@ def _locate_config() -> tuple[Path | None, str, Path | None]:
     """
     explicit = os.environ.get("X4_CONFIG")
     if explicit:                                  # empty counts as unset, like ${X4_CONFIG:-}
-        p = Path(native(explicit))
+        p = config_spelling(explicit)
         return (p, "explicit", None) if p.is_file() else (None, "explicit-missing", None)
     toolkit = toolkit_root()                      # B2: the toolkit this code lives in
     if toolkit is not None:
@@ -744,7 +759,7 @@ def config_conflict() -> tuple[Path, Path, bool] | None:
     acting = _EXPLICIT if _EXPLICIT is not None else _SELF
     if acting is None:
         return None
-    p = Path(native(explicit))
+    p = config_spelling(explicit)
     exists = p.is_file()
     if exists and _inside(p, acting):
         return None

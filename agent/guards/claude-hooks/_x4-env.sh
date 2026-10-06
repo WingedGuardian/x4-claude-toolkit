@@ -245,6 +245,31 @@ _x4_cfg_read() {
   return 0
 }
 
+# _x4_lexnorm PATH -> REPLY: `.` and `..` components resolved LEXICALLY and repeated `/`
+# collapsed, as Python's os.path.normpath does (FX-G5 / J2 item 4). A leading `/` or `//` is
+# kept, a `..` never climbs above the start of a relative path's own text (it is kept, as
+# normpath keeps it) nor past a root or a drive (`C:`). String operations only.
+_x4_lexnorm() {
+  local p="$1" lead="" part rest
+  local -a out=()
+  case "$p" in //*) [ "${p:2:1}" = "/" ] && lead="/" || lead="//" ;; /*) lead="/" ;; esac
+  rest="$p/"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"; rest="${rest#*/}"
+    case "$part" in
+      ""|.) ;;
+      ..) if [ "${#out[@]}" -gt 0 ] && [ "${out[-1]}" != ".." ]; then
+            case "${out[-1]}" in [A-Za-z]:) ;; *) unset 'out[-1]' ;; esac
+          elif [ -z "$lead" ]; then out+=(..); fi ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  local IFS=/
+  REPLY="$lead${out[*]}"
+  [ -n "$REPLY" ] || REPLY="."
+  case "$REPLY" in [A-Za-z]:) REPLY="$REPLY/" ;; esac   # `C:/..` is the drive root, as ntpath
+}
+
 # Load the user's path config if present (KEY=VALUE lines).
 # WHICH FILE (Plan 3 lane I). ONE rule, mirrored by _paths._locate_config and pinned to it by
 # tests/test_config_precedence_agrees.py: $X4_CONFIG (explicit; naming no file reads NONE) >
@@ -261,7 +286,15 @@ if [ -n "${X4_CONFIG:-}" ]; then
   # sees the file actually read. String operations only: this runs on every tool call.
   if [ ! -f "$X4_CONFIG" ]; then
     _x4_cn="$X4_CONFIG"
-    case "${OSTYPE:-}" in msys*|cygwin*) _x4_cn="${_x4_cn//\\//}" ;; esac
+    case "${OSTYPE:-}" in msys*|cygwin*)
+      _x4_cn="${_x4_cn//\\//}"
+      # FX-G5 / reviewer J2 item 4: `<file>::$DATA` is the file's own data stream to Win32
+      # (Python opens it); the suffix is dropped, case-insensitively, as _paths does.
+      case "$_x4_cn" in *::[\$][Dd][Aa][Tt][Aa]) _x4_cn="${_x4_cn%::*}" ;; esac ;;
+    esac
+    # ...and `.` / `..` components are resolved LEXICALLY (Python's normpath), so
+    # `x4-paths.env/.` and `sub/../x4-paths.env` name the file Python reads.
+    _x4_lexnorm "$_x4_cn"; _x4_cn="$REPLY"
     while [ "${#_x4_cn}" -gt 1 ] && [ "${_x4_cn%/}" != "$_x4_cn" ]; do _x4_cn="${_x4_cn%/}"; done
     case "${OSTYPE:-}" in msys*|cygwin*)
       case "${_x4_cn##*/}" in

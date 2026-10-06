@@ -217,6 +217,19 @@ def _norm_path(p) -> str:
     return s.rstrip("/") if len(s) > 1 else s
 
 
+def _config_spelling(cfg: str) -> Path:
+    """The file an explicit X4_CONFIG names, spelled as BOTH loaders spell it (`_x4-env.sh`,
+    `_paths.config_spelling`; FX-G5 / reviewer J2 item 4): MSYS `/c/` translated and a
+    `::$DATA` suffix dropped on Windows, then `.` / `..` resolved lexically."""
+    s = cfg
+    if _on_windows():
+        if len(s) >= 3 and s[0] == "/" and s[2] == "/" and s[1].isalpha():
+            s = s[1].upper() + ":" + s[2:]
+        if s.lower().endswith("::$data"):
+            s = s[:-len("::$data")]
+    return Path(os.path.normpath(s)) if s else Path(s)
+
+
 def _is_stub(path: str | None) -> bool:
     """The Windows bash stubs: WSL's System32/SysWOW64 launcher and the Store alias. They
     RESOLVE, and cannot run a Windows-path script -- a guard started through one fails
@@ -1143,7 +1156,7 @@ def _foreign_config_first(ctx: Ctx, tk: Path) -> str:
     cfg = ctx.env.get("X4_CONFIG") or ""
     if not cfg:
         return ""
-    f = Path(cfg)
+    f = _config_spelling(cfg)
     try:
         inside = f.is_file() and os.path.normcase(str(f.resolve())).startswith(
             os.path.normcase(str(Path(tk).resolve())) + os.sep)
@@ -1229,7 +1242,7 @@ def config_files(ctx: Ctx) -> list[Path]:
     Existing files only, deduplicated."""
     cands = []
     if ctx.env.get("X4_CONFIG"):
-        cands.append(Path(ctx.env["X4_CONFIG"]))
+        cands.append(_config_spelling(ctx.env["X4_CONFIG"]))
     vals = (guard_probe(ctx)[0] if guard_dirs(ctx) else None) or {}
     if vals.get("CFG"):
         cands.append(Path(vals["CFG"]))

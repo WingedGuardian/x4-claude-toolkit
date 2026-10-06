@@ -1592,6 +1592,26 @@ def test_FXB4_TWIN_X4_CONFIG_naming_the_root_s_OWN_config_needs_no_clearing(sand
     assert row.status == doc.TODO and "unset X4_CONFIG" not in row.detail, row
 
 
+@pytest.mark.parametrize("suffix", ["/.", "/./", ""] + (["::$DATA", "::$data"] if os.name == "nt" else []))
+def test_FXG5_the_root_s_OWN_config_in_ANY_spelling_needs_no_clearing(sandbox, tmp_path, suffix):
+    """FX-G5 / reviewer J2 item 4: the doctor judges the file the loaders READ -- `.`/`..`
+    lexically, `::$DATA` dropped -- not the raw string (`x4-paths.env/.` read as missing)."""
+    _fresh(sandbox, tmp_path)
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env["X4_CONFIG"] = str(sandbox.root / "sub" / ".." / "x4-paths.env") + suffix
+    row = _roots_ref_row(sandbox, env=env)
+    assert row.status == doc.TODO and "unset X4_CONFIG" not in row.detail, (suffix, row)
+    assert doc._config_spelling(env["X4_CONFIG"]) == Path(os.path.normpath(sandbox.root / "x4-paths.env"))
+
+
+def test_FXG5_TWIN_a_missing_config_in_the_same_spelling_still_says_clear_it(sandbox, tmp_path):
+    _fresh(sandbox, tmp_path)
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env["X4_CONFIG"] = str(sandbox.root / "nope.env") + "/."
+    row = _roots_ref_row(sandbox, env=env)
+    assert "unset X4_CONFIG" in row.detail, row
+
+
 def test_FXB4_a_MOVED_tree_is_UNKNOWN_not_a_fresh_unpack__buildid_marker(sandbox, tmp_path):
     """x4refguard says "does not exist (not unpacked yet, or renamed or moved)" -- it cannot
     tell. The doctor said "not unpacked" (TODO, run the unpack): for a tree the user MOVED, a
