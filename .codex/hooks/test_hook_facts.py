@@ -4540,6 +4540,198 @@ class TestG2MoveToTrashIsADelete(unittest.TestCase):
         self.assertFalse(f["rm_in_x4_dir"] or f["rm_hits_game"] or f["rm_targets_reference"])
 
 
+_NL = chr(10)
+
+
+class TestE1HeredocQuoteStateCrossesLines(unittest.TestCase):
+    """Reviewer E1 (pre-arc): the heredoc scan judged each line as if it began unquoted, so a
+    `<<WORD` on the 2nd line of a multi-line QUOTED string opened a skip region that never
+    closed -- `rm -rf <game>` on the next line was ALLOWED past the hard block."""
+
+    def test_a_marker_inside_a_multiline_quote_hides_nothing(self):
+        for q_open, q_close in ((DQ, DQ), (Q, Q)):
+            for tail, key in ((DEL_GAME, "rm_hits_game"),
+                              (D + ' -rf "' + REF + '/libraries"', "rm_targets_reference"),
+                              ('echo x > "' + REF + '/a.xml"', "writes_reference")):
+                c = "git commit -m " + q_open + "notes" + _NL + "use cat <<EOF here" + q_close + _NL + tail
+                with self.subTest(q=q_open, tail=tail):
+                    self.assertTrue(F(c)[key], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_real_heredoc_after_a_CLOSED_multiline_quote_is_still_data(self):
+        """Clause: the quote is still OPEN where `<<` stands."""
+        c = 'echo "a' + _NL + 'b"' + _NL + "cat > n.md <<EOF" + _NL + DEL_GAME + _NL + "EOF"
+        self.assertFalse(F(c)["rm_hits_game"])
+
+    def test_TWIN_a_quote_in_a_COMMENT_opens_nothing(self):
+        """Clause: the quote is CODE. `# it's` must not swallow the next heredoc opener."""
+        c = "# it's" + _NL + "cat > n.md <<EOF" + _NL + DEL_GAME + _NL + "EOF"
+        self.assertFalse(F(c)["rm_hits_game"])
+
+    def test_two_heredocs_on_one_line_are_read_in_order(self):
+        c = ("cat > a.md <<A; cat > b.md <<B" + _NL + "x" + _NL + "A" + _NL + "it's" + _NL
+             + "B" + _NL + DEL_GAME)
+        self.assertTrue(F(c)["rm_hits_game"])
+        self.assertEqual([d[1] for d in H._heredoc_walk(c)[0]], ["A", "B"])
+
+
+class TestE2TerminatorInsideASubstitution(unittest.TestCase):
+    """Reviewer E2 (pre-arc): `EOF)` ends a heredoc opened inside `$(` (MEASURED in bash: a
+    warning, then the next line RUNS); the scan read body to the end of input."""
+
+    def test_EOF_paren_ends_the_body(self):
+        c = "x=$(cat <<EOF" + _NL + "hi" + _NL + "EOF)" + _NL + DEL_GAME
+        self.assertTrue(F(c)["rm_hits_game"])
+        self.assertTrue(H._is_heredoc_end("EOF)", "EOF"))
+        self.assertTrue(H._is_heredoc_end("  EOF )", "EOF"))
+
+    def test_TWIN_a_body_line_merely_STARTING_with_the_word_is_body(self):
+        """Clause: only `)` may follow the delimiter."""
+        self.assertFalse(H._is_heredoc_end("EOFX", "EOF"))
+        self.assertFalse(H._is_heredoc_end("EOF and more", "EOF"))
+        c = "cat > n.md <<EOF" + _NL + "EOFX " + DEL_GAME + _NL + "EOF"
+        self.assertFalse(F(c)["rm_hits_game"])
+
+
+class TestE3AHeredocPipedIntoAShellOnALaterLine(unittest.TestCase):
+    """Reviewer E3 (pre-arc): `cat <<EOF |` / body / `EOF` / `bash` and `{ cat <<EOF ... } |
+    bash` RUN the body, but the opener line names no shell, so it was stripped as data."""
+
+    def test_a_body_that_flows_into_a_piped_shell_is_commands(self):
+        for c in ("cat <<EOF |" + _NL + D + ' -rf "' + REF + '/libraries"' + _NL + "EOF" + _NL + "bash",
+                  "{ cat <<EOF" + _NL + DEL_GAME + _NL + "EOF" + _NL + "} | bash"):
+            with self.subTest(c=c):
+                f = F(c)
+                self.assertTrue(f["rm_hits_game"] or f["rm_targets_reference"], c)
+
+    def test_a_pipe_ending_a_line_continues_onto_the_next(self):
+        self.assertEqual(H.piped_in("echo a |" + _NL + "bash"), [False, True])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_no_piped_shell_leaves_the_body_data(self):
+        """Clause: a sink READS A PIPE. A file payload beside an unrelated pipe stays data."""
+        c = "cat > n.md <<EOF" + _NL + DEL_GAME + _NL + "EOF" + _NL + "ls | wc -l"
+        self.assertFalse(F(c)["rm_hits_game"])
+
+    def test_TWIN_a_newline_is_not_a_pipe(self):
+        self.assertEqual(H.piped_in("echo a" + _NL + "bash"), [False, False])
+
+
+class TestE4CmdReadsItsProgramFromStdin(unittest.TestCase):
+    """Reviewer E4 (pre-arc): `echo rd /s /q "<ref>" | cmd` and `cmd <<EOF` ran with no /c,
+    and only `/c` was a carrier. Both are read as cmd programs now (translated)."""
+
+    def test_echo_into_cmd_and_a_cmd_heredoc(self):
+        for c in ('echo rd /s /q "' + REF + '" | cmd',
+                  "cmd <<EOF" + _NL + 'rd /s /q "' + REF + '"' + _NL + "EOF",
+                  "CMD.EXE <<EOF" + _NL + 'rd /s /q "' + REF + '"' + _NL + "EOF"):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_targets_reference"], c)
+
+    def test_an_unreadable_stdin_program_is_reported(self):
+        self.assertTrue(F("cmd < script.bat")["carrier_untranslated"])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_cmd_with_c_takes_no_stdin_program(self):
+        """Clause: NO /c /k /r. Its heredoc feeds the child, not cmd's parser."""
+        self.assertFalse(H._cmd_reads_stdin("cmd /c sort"))
+        self.assertEqual(H.cmd_heredoc_bodies("cmd /c sort <<EOF" + _NL + "rd /s /q x" + _NL + "EOF"), [])
+
+    def test_TWIN_a_bare_cmd_with_nothing_piped_runs_nothing(self):
+        f = F("cmd")
+        self.assertFalse(f["carrier_untranslated"] or f["rm_targets_reference"])
+
+
+class TestE5AnsiCQuoting(unittest.TestCase):
+    """Reviewer E5 (pre-arc): `$'it\\'s'` -- a backslash escapes the quote in ANSI-C quoting --
+    opened a never-closing quote in every scanner, so `; rm -rf <game>` was one segment."""
+
+    def test_an_escaped_quote_in_ansi_c_ends_nothing(self):
+        c = "echo $'it" + BS + "'s'; " + DEL_GAME
+        self.assertTrue(F(c)["rm_hits_game"])
+        self.assertEqual(len(H.segments(c)), 2)
+        self.assertNotIn("#", H.strip_comments("echo $'a" + BS + "'b' # c"))
+        self.assertEqual(H.blank_single_quoted("$'a" + BS + "'b' x"), "$'    ' x")
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_ansi_c_text_is_still_literal(self):
+        """Clause: ANSI-C is a QUOTE -- a command inside it does not run."""
+        self.assertFalse(F("echo $'" + D + " -rf " + GAME + "'")["rm_hits_game"])
+        self.assertEqual(H.substitutions("echo $'$(" + D + " x)'"), [])
+
+    def test_TWIN_an_escaped_dollar_does_not_open_ansi_c(self):
+        """Clause: the `$` is unescaped. `\\$'a\\'` is `$` then a SINGLE-quoted `a\\`."""
+        self.assertEqual(len(H.segments("echo " + BS + "$'a" + BS + "'; " + DEL_GAME)), 2)
+
+
+class TestE6GitWorkTreeAndRequireForce(unittest.TestCase):
+    """Reviewer E6 (pre-arc): only -C set the wipe directory, and -f was assumed required."""
+
+    def test_the_work_tree_spellings_name_the_folder(self):
+        for c in ('git --git-dir="' + GAME + '/.git" --work-tree "' + GAME + '" clean -fdx',
+                  'git --work-tree "' + GAME + '" clean -fdx',          # each spelling ALONE
+                  'git --work-tree="' + GAME + '" clean -fdx',
+                  'GIT_WORK_TREE="' + GAME + '" git clean -fdx',
+                  'GIT_DIR="' + GAME + '/.git" git reset --hard'):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    def test_requireForce_false_makes_an_unforced_clean_delete(self):
+        for v in ("false", "no", "off", "0", "FALSE"):
+            c = 'git -C "' + GAME + '" -c clean.requireForce=' + v + " clean -dx"
+            with self.subTest(v=v):
+                self.assertTrue(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_requireForce_true_or_another_key_is_not_forced(self):
+        for c in ('git -C "' + GAME + '" -c clean.requireForce=true clean -dx',
+                  'git -C "' + GAME + '" -c clean.requireForce clean -dx',
+                  'git -C "' + GAME + '" -c core.fileMode=false clean -dx'):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    def test_TWIN_a_work_tree_outside_every_root_is_silent(self):
+        self.assertFalse(FC('git --work-tree="C:/work/x" clean -fdx', _ELSEWHERE)["git_wipes_x4_dir"])
+
+
+class TestE7EveryAclLiftAsks(unittest.TestCase):
+    """Reviewer E7: `/grant` (an explicit allow overrides the INHERITED deny), `/inheritance:r`,
+    `/restore` on an ancestor, `/setowner`, and an x4refguard `remove` supplied by xargs or a
+    variable were not lifts."""
+
+    def test_every_acl_modifying_switch_lifts(self):
+        for c in ('icacls "' + REF + '/libraries" /grant "*S-1-1-0:(OI)(CI)F" /T',
+                  'icacls "' + REF + '/libraries" /grant:r user:F',
+                  'icacls "' + REF + '/libraries" /inheritance:r',
+                  'icacls "' + REF + '" /setowner someone',
+                  'icacls "' + TOOLKIT + '" /restore acl.txt',
+                  'icacls "' + REF + '" /substitute S-1-1-0 S-1-5-32-545'):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["lifts_reference_deny"], c)
+
+    def test_an_action_the_guard_cannot_read_lifts(self):
+        for c in ("echo remove | xargs python scripts/x4refguard.py",
+                  'python scripts/x4refguard.py "$ACTION"'):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["lifts_reference_deny"], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_applying_the_deny_or_reading_is_not_a_lift(self):
+        for c in ('icacls "' + REF + '" /deny "*S-1-1-0:(OI)(CI)(DE,DC)"', 'icacls "' + REF + '"',
+                  'icacls "' + REF + '" /save acl.txt /T', "python scripts/x4refguard.py status"):
+            with self.subTest(c=c):
+                self.assertFalse(F(c)["lifts_reference_deny"], c)
+
+    def test_TWIN_a_grant_ABOVE_the_tree_without_T_or_elsewhere_is_not_a_lift(self):
+        """Clause: under the tree, or /T or /restore walking into it."""
+        self.assertFalse(F('icacls "' + TOOLKIT + '" /grant user:F')["lifts_reference_deny"])
+        self.assertFalse(F('icacls "C:/work/x" /grant user:F /T')["lifts_reference_deny"])
+
+    def test_TWIN_a_switch_VALUE_is_not_a_path(self):
+        """The trustee spec / ACL file after a switch is not where the ACL is applied."""
+        self.assertEqual(H._icacls_paths('icacls "C:/a" /grant "' + REF + ':F"'), ["C:/a"])
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.
