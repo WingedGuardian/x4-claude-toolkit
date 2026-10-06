@@ -197,14 +197,16 @@ confusing messages and six cosmetic ones. All are fixed:
   refusal. It fails closed when Python, the adapter or the guards cannot answer. The game-install
   block is plugin-only.
 - **The plugin judges a `bash` call in the grammar of the shell OpenCode runs it in**:
-  `X4_OPENCODE_SHELL` if set, else OpenCode's configured `shell`, else `$SHELL`; a shell OpenCode
-  itself refuses (fish, nu) falls back to the platform default (PowerShell on Windows, bash
-  elsewhere), as OpenCode does. It used to assume bash everywhere off Windows and PowerShell on
-  Windows, so under a `pwsh` shell a PowerShell `Remove-Item` into `reference/` was judged as bash
-  and allowed (BLIND-SPOTS F176). **With any other shell -- `cmd`, or anything but bash, sh,
-  dash, ksh, zsh, pwsh or powershell -- every `bash` call is refused** (fail-closed: the guards
-  have no grammar for it). Not yet mirrored: OpenCode's fallback when the configured shell is
-  not installed.
+  OpenCode's configured `shell`, else `$SHELL`; a shell OpenCode itself refuses (fish, nu) falls
+  back to the platform default (PowerShell on Windows, bash elsewhere), as OpenCode does. It used
+  to assume bash everywhere off Windows and PowerShell on Windows, so under a `pwsh` shell a
+  PowerShell `Remove-Item` into `reference/` was judged as bash and allowed (BLIND-SPOTS F176).
+  **With any other shell -- `cmd`, or anything but bash, sh, dash, ksh, zsh, pwsh or powershell --
+  every `bash` call is refused** (fail-closed: the guards have no grammar for it), and the refusal
+  says to set OpenCode's own `shell` to pwsh, powershell or bash. A configured shell that does not
+  resolve to a program (OpenCode would silently fall back to another) is refused too, and so is
+  every `bash` call when `X4_OPENCODE_SHELL` disagrees with the detected shell: it is a
+  declaration the installers read, never an override of the grammar.
 - A patch is read with **OpenCode's own grammar** (column-0 headers, unknown lines skipped), not Codex's, checked against OpenCode v1.18.34's parser run under node (BLIND-SPOTS F153).
 - The OpenCode **desktop app is not supported** (its plugin hooks never fire,
   anomalyco/opencode#38604). Nothing here was run inside OpenCode: the README's OpenCode section
@@ -495,7 +497,8 @@ confusing messages and six cosmetic ones. All are fixed:
   read-only, out-of-date `.opencode/opencode.jsonc` now stops the install before anything is
   written.
 - The OpenCode skills' `{{TOOLKIT}}` becomes `$X4_TOOLKIT` on Windows when
-  `X4_OPENCODE_SHELL=bash`. Codex and generic skills keep `$env:X4_TOOLKIT`. Both installers
+  `X4_OPENCODE_SHELL=bash` (set it only when OpenCode's own `shell` is bash: the plugin refuses
+  every `bash` call while the two disagree). Codex and generic skills keep `$env:X4_TOOLKIT`. Both installers
   now write derived paths (`<toolkit>/reference`, `<profile>/debug.txt`, `<game>/extensions`)
   with `/`.
 - `deploy-claude-dir.py` exits 1 when two path configs differ; it used to report them and

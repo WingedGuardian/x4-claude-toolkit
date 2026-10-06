@@ -7,8 +7,9 @@ Claude Code 2.1.290: a project `.claude/settings.json` `env` block reaches every
 `"env": {"X4_GUARD": "off"}` into a settings file switches every guard to advisory at the next
 launch -- the switch the launch environment alone is meant to hold (R1-F1).
 
-The rule: an agent write to `.claude/settings*.json` whose RESULTING content sets X4_GUARD or
-X4_GUARD_CHECK in an `env` block is DENIED; every other settings edit is allowed. When the
+The rule: an agent write to `.claude/settings*.json` whose RESULTING content names X4_GUARD or
+X4_GUARD_CHECK -- in an `env` block or ANYWHERE else, e.g. a `hooks` command prefix
+`X4_GUARD=off bash ...` (FX-G4 / H4a) -- is DENIED; every other settings edit is allowed. When the
 result cannot be known, it is denied with a reason the agent can act on -- never an ask (the
 user's no-prompt rule).
 
@@ -29,11 +30,13 @@ import sys
 #: project or user level, any dialect (backslashes and case folded by the caller's norm).
 SETTINGS = re.compile(r"(^|/)\.claude/settings[^/]*\.json$")
 KEYS = ("X4_GUARD", "X4_GUARD_CHECK")
+#: Either key named anywhere in a string (X4_GUARD_CHECK contains X4_GUARD).
+_MENTION = re.compile(r"X4_GUARD(?:_CHECK)?", re.IGNORECASE)
 #: The text could spell a key without containing it literally: a JSON \u escape.
 _ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
 
-REASON = ("BLOCKED: this write would set {key} in the `env` block of {path}, a Claude Code "
-          "settings file whose `env` reaches every hook -- it would switch the X4 guards off at "
+REASON = ("BLOCKED: this write would put {key} into {path}, a Claude Code settings file whose "
+          "`env` block and hook commands reach every hook -- it could switch the X4 guards off at "
           "the next launch. Agents may not do that (user decision, 2026-10-05). The user can set "
           "X4_GUARD=off themselves, in the environment they launch from. Make the settings edit "
           "without that key.")
@@ -69,9 +72,19 @@ def guard_keys(text: str):
             for k, v in o.items():
                 if k == "env" and isinstance(v, dict):
                     found += [x for x in v if str(x).upper() in KEYS]
+                elif _MENTION.search(str(k)):
+                    found.append(_MENTION.search(str(k)).group(0))
+                if k == "permissions" and o is doc:
+                    continue    # rule STRINGS (`Bash(export X4_GUARD=off)`) set nothing (USER, 2026-10-06)
                 stack.append(v)
         elif isinstance(o, list):
             stack.extend(o)
+        elif isinstance(o, str) and _MENTION.search(o):
+            # FX-G4 / reviewer H4a, MEASURED: `X4_GUARD=off bash .../protect-bash.sh` as a
+            # `hooks` COMMAND string switches that hook off and was allowed -- only an `env`
+            # block was read. The key ANYWHERE in the file is refused (USER DECISION: "block
+            # X4_GUARD there"); a settings file has no legitimate use for it.
+            found.append(_MENTION.search(o).group(0))
     return found, True
 
 
@@ -133,7 +146,14 @@ def judge(tool_input: dict) -> str:
             return UNKNOWN.format(path=path, why="The file cannot be read.")
         result = _apply(cur, edits)
         if result is None:
-            return ""                              # the edit does not apply: the tool refuses it
+            # The edit does not apply to the file as READ here -- but the tool may see a
+            # different file (it changed in between, another spelling of the path). FX-G4 /
+            # reviewer H-M1: the text being written is then judged on its own.
+            for e in edits:
+                new = e.get("new_string") if isinstance(e, dict) else None
+                if isinstance(new, str) and (_MENTION.search(new) or _ESCAPE.search(new)):
+                    return REASON.format(key="X4_GUARD", path=path)
+            return ""
     keys, ok = guard_keys(result)
     if not ok:
         return UNKNOWN.format(path=path, why="The result is not valid JSON and mentions the key.")

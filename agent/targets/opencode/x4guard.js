@@ -12,10 +12,12 @@
 //
 // Exactly ONE export: OpenCode calls EVERY export of a plugin module as a plugin (READ).
 // Settings (environment): X4_PYTHON (+ X4_NO_PYTHON_FALLBACK=1), X4_OPENCODE_SHELL (bash or
-// powershell: overrides the shell the plugin derives from OpenCode's `shell` config and $SHELL),
+// powershell: a DECLARATION the installers read; it never changes the grammar, and when it disagrees
+// with the shell derived from OpenCode's `shell` config and $SHELL every `bash` call is refused),
 // X4_OPENCODE_TIMEOUT_S (default 60; the adapter's own budget is 45).
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
+import { delimiter, dirname, isAbsolute, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 // Every BUILT-IN OpenCode tool that writes a file or runs a command (R7-13, READ at v1.18.34:
@@ -59,7 +61,6 @@ function timeoutSeconds() {
 const POSIX_SHELLS = new Set(["bash", "dash", "ksh", "sh", "zsh"])
 const PS_SHELLS = new Set(["pwsh", "powershell"])
 const REFUSED_BY_OPENCODE = new Set(["fish", "nu"])
-let configShell = null
 
 function shellBaseName(file) {
   const base = String(file).split(/[\\/]/).pop().toLowerCase()
@@ -72,14 +73,67 @@ function grammarOf(name) {
   return name // no guard grammar: the adapter refuses it (inert)
 }
 
-function shellName() {
-  if (process.env.X4_OPENCODE_SHELL) return process.env.X4_OPENCODE_SHELL
+function isFile(p) {
+  try {
+    return statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
+
+// A PATH lookup, as OpenCode's which() does: PATHEXT on Windows.
+function which(cmd) {
+  const exts = WIN ? ["", ...(process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)] : [""]
+  for (const dir of (process.env.PATH || "").split(delimiter)) {
+    if (!dir) continue
+    for (const ext of exts) {
+      const p = join(dir, cmd + ext)
+      if (isFile(p)) return p
+    }
+  }
+  return null
+}
+
+// Does the shell file RESOLVE, as OpenCode's resolve() requires before it uses it (READ
+// packages/core/src/shell.ts select()/resolve()/full(), FX-G4 / reviewer G-M2)? A rooted path must
+// be a file; a bare name is looked up on PATH; on Windows `bash` is Git Bash (git's ../../bin/bash.exe)
+// first. A configured shell that does not resolve makes OpenCode fall back to its platform default
+// (Windows: pwsh first) -- e.g. `shell: zsh` on Windows without zsh runs PowerShell, while the plugin
+// judged bash. Mirroring that fallback exactly needs OpenCode's own which(); the plugin REFUSES instead.
+function resolves(file) {
+  const f = String(file)
+  const drive = /^[A-Za-z]:[\\/]/.test(f)
+  // Windows `bash` given bare or as a POSIX path (Git Bash sets SHELL=/usr/bin/bash) is Git Bash.
+  if (WIN && shellBaseName(f) === "bash" && !drive && !(f.includes("\\") || (f.includes("/") && !f.startsWith("/")))) {
+    const git = which("git")
+    if (git && isFile(join(dirname(git), "..", "bin", "bash.exe"))) return true
+    if (f.startsWith("/")) return false
+  }
+  if (isAbsolute(f) || drive) return isFile(f)
+  return which(f) !== null || (WIN && which(f.replace(/\.[^.\\/]*$/, "")) !== null)
+}
+
+// The grammar of the shell OpenCode RUNS a `bash` call in, or a refusal the adapter reports (inert).
+function shellName(configShell) {
   // OpenCode consults ONE source: the configured shell when set (falling back to the platform default,
   // NOT to $SHELL, when it is refused), else $SHELL.
   const chosen = configShell || process.env.SHELL || ""
   const name = chosen ? shellBaseName(chosen) : ""
-  if (name && !REFUSED_BY_OPENCODE.has(name)) return grammarOf(name)
-  return WIN ? "powershell" : "bash"
+  let grammar
+  if (name && !REFUSED_BY_OPENCODE.has(name)) {
+    if (!resolves(chosen)) return `${chosen} (it does not resolve to a program here, so OpenCode would fall back to another shell)`
+    grammar = grammarOf(name)
+  } else {
+    grammar = WIN ? "powershell" : "bash"
+  }
+  // X4_OPENCODE_SHELL may only CONFIRM the detected shell, never replace it (FX-G4 / reviewer G-I1,
+  // MEASURED: the override made `del /s /q <reference>\libraries` under a cmd shell be judged as bash
+  // -- allow). The installers read it to render the OpenCode skills for bash on Windows.
+  const decl = process.env.X4_OPENCODE_SHELL
+  if (decl && grammarOf(shellBaseName(decl)) !== grammar) {
+    return `${grammar} (X4_OPENCODE_SHELL=${decl} disagrees with it)`
+  }
+  return grammar
 }
 
 let pythonCache = null
@@ -183,8 +237,11 @@ function runAdapter(adapter, event, payload) {
 export const X4Guard = async ({ directory }) => {
   const adapter = fileURLToPath(new URL("../hooks/opencode_adapter.py", import.meta.url))
   const advisories = new Map()
+  // PER PLUGIN INSTANCE (FX-G4 / reviewer G-M3): a module-global let one project's `config` decide
+  // the grammar for every other OpenCode instance that loaded this module.
+  let configShell = null
   const ask = (event, tool, args) =>
-    runAdapter(adapter, event, { v: 1, tool, args: args ?? {}, directory, shell: shellName() })
+    runAdapter(adapter, event, { v: 1, tool, args: args ?? {}, directory, shell: shellName(configShell) })
 
   return {
     // OpenCode hands every plugin its config at load (READ plugin/index.ts: hook.config?.(cfg)); its

@@ -515,7 +515,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=261
+EXPECT=279
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1275,6 +1275,39 @@ case "$_sc" in
     ok "session-canary names the settings file that sets X4_GUARD" ;;
   *) no "session-canary did not report X4_GUARD in the settings env: ${_sc:0:200}" ;;
 esac
+
+# =============================================================================
+# FX-G4 (v4.0.0 delta review, reviewers G and H): each was ALLOWED (or wrongly ASKED) before
+# =============================================================================
+echo; echo "=== FX-G4: parser and rule bypasses, end to end ==="
+_g4save="$(declare -p X4_GAME X4_REFERENCE X4_TOOLKIT CLAUDE_PROJECT_DIR 2>/dev/null)"
+_g4tk="$SBX_TMP/g4tk"; _g4g="$SBX_TMP/g4game/X4 Foundations"; _g4r="$_g4tk/reference"
+mkdir -p "$_g4r/libraries" "$_g4g/libraries" "$_g4tk/.claude"
+export X4_GAME="$_g4g" X4_REFERENCE="$_g4r" X4_TOOLKIT="$_g4tk" CLAUDE_PROJECT_DIR="$_g4tk"
+_NL=$'\n'; _RMG="rm -rf \"$_g4g\""
+decide deny   protect-bash.sh "$(cj "((x=1<<EOF))${_NL}${_RMG}")"                    "H5: a shift in (( )) opens no heredoc: the next line is judged"
+decide deny   protect-bash.sh "$(cj "x=\`cat <<EOF${_NL}hi${_NL}EOF\`${_NL}${_RMG}")"  "H5: EOF + backtick ends the heredoc"
+decide allow  protect-bash.sh "$(cj "cat <<EOF${_NL}${_RMG}${_NL}EOF")"                "TWIN H5: a real heredoc body is still data"
+decide deny   protect-bash.sh "$(cj "cmd //k <<EOF${_NL}rd /s /q \"$_g4r\"${_NL}EOF")"  "H1: cmd /k reads its program from stdin"
+decide allow  protect-bash.sh "$(cj "echo rd /s /q \"$_g4r\" | cmd //c sort")"           "TWIN H1: cmd /c sort takes no stdin program"
+decide deny   protect-bash.sh "$(cj 'rm -rf "${X4_GAME:-/x}"')"                          "H2: a root variable under :- is its root"
+decide allow  protect-bash.sh "$(cj 'rm -rf "${G4_NOT_A_ROOT:-/tmp/g4zz}"')"             "TWIN H2: another variable under :- is not"
+decide ask    protect-bash.sh "$(cj "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=clean.requireForce GIT_CONFIG_VALUE_0=false git -C \"$_g4tk\" clean -dx")" \
+  "H6: git config from the environment forces a clean in the toolkit"
+decide deny   protect-bash.sh "$(cj "echo ${_RMG} | bash")"                              "H7: unquoted echo piped into bash is its program"
+decide deny   protect-bash.sh "$(cj "bash <(echo ${_RMG})")"                             "H8: a process substitution run as a script"
+decide deny   protect-bash.sh "$(cj "x=\$(printf rm); \$x -rf \"$_g4r\"")"               "G-OUT: a verb from a variable holding a substitution"
+decide advise protect-bash.sh "$(cj "\$(echo rm) -rf \"$_g4g/libraries\"")"              "F183: a substituted verb below the game root advises"
+decide allow  protect-bash.sh "$(cj 'python scripts/x4refguard.py apply --toolkit "$X4_TOOLKIT"')" "H9: a variable in an OPTION value is not the action"
+decide ask    protect-bash.sh "$(cj 'python scripts/x4refguard.py "$ACT"')"                "TWIN H9: an unresolved ACTION still asks"
+decide ask    protect-bash.sh "$(cj "takeown /f \"$_g4r\" /r")"                           "H-M5: takeown of reference asks"
+decide deny   protect-bash.sh "$(cj "gio trash \"file://${_g4g// /%20}\"")"               "H-M3: a percent-encoded file:// URL is decoded"
+_hk(){ printf '{"tool_name":"Write","tool_input":{"file_path":%s,"content":%s}}' \
+         "$(printf '%s' "$_g4tk/.claude/settings.json" | jq -Rs .)" \
+         "$(printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s bash .claude/hooks/protect-bash.sh"}]}]}}' "$1" | jq -Rs .)"; }
+decide deny   protect-files.sh "$(_hk 'X4_GUARD=off')"                                    "H4a: X4_GUARD in a hooks COMMAND of a settings file"
+decide allow  protect-files.sh "$(_hk 'FOO=1')"                                           "TWIN H4a: an ordinary hooks command"
+unset X4_GAME X4_REFERENCE X4_TOOLKIT CLAUDE_PROJECT_DIR; eval "$_g4save"
 
 # THE CALLER-DIRECTORY CHECK RUNS LAST (reviewer E, minor): it sat above every section added
 # since, so a probe below it that leaked a path into the caller's directory went unseen.

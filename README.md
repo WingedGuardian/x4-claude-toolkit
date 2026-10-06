@@ -541,7 +541,10 @@ not measured against a running OpenCode.** The reading is recorded in
 - **Start OpenCode in the toolkit folder.** Its config and plugins are found walking up from where
   it starts. `OPENCODE_DISABLE_PROJECT_CONFIG` turns BOTH layers off.
 - **Windows shell.** OpenCode runs commands in PowerShell unless you set `shell` in its config;
-  if you did, set `X4_OPENCODE_SHELL=bash` so the guards judge the right shell.
+  the plugin reads that setting itself. If you set it to bash, also set `X4_OPENCODE_SHELL=bash`
+  before installing so the skills are rendered for bash -- the plugin refuses every command while
+  the two disagree. A shell the guards cannot judge (`cmd`) is refused: set OpenCode's `shell` to
+  pwsh, powershell or bash.
 - **Your own `permission.edit` or `permission.bash` written as a string** (`"edit": "ask"`) is
   replaced by the toolkit's deny object when OpenCode merges configs (READ). Write it as
   `{"*": "ask"}`. `x4doctor` flags it.

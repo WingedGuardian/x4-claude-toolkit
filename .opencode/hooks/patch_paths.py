@@ -358,6 +358,31 @@ def parse_patch_opencode(text: str) -> list[tuple[str, str]]:
     return ops
 
 
+#: A `cd` target the shell EXPANDS: `$X4_REFERENCE`, `${X}`, `$env:X`, `%X%`, `~`, `$(...)`, a
+#: backtick. Single-quoted text is literal in bash and PowerShell alike.
+_EXPANDS = re.compile(r"[$`]|%[^%\s]+%|^~")
+
+
+def _literal_cd(raw: str | None) -> str | None:
+    """The `cd` directory a shell patch runs in, dequoted. FX-G4 / reviewer H3, MEASURED: `cd
+    $X4_REFERENCE && codex --codex-run-as-apply-patch '...Add File: libraries/x.xml...'` (and
+    `$env:X4_REFERENCE`, and `apply_patch <<EOF` after such a cd) judged the LITERAL path
+    `<cwd>/$X4_REFERENCE/libraries/x.xml` -- the variable was never expanded. Which value the
+    agent's shell gives it is not knowable here (the configured roots live in the bash guards,
+    and a shell environment policy may differ from this process's), so a directory that the
+    shell expands is REFUSED, never guessed: the patch must name its directory literally."""
+    if not raw:
+        return None
+    if raw[0] == "'" and raw[-1:] == "'" and len(raw) > 1:
+        return raw[1:-1]
+    cd = raw[1:-1] if raw[0] == '"' and raw[-1:] == '"' and len(raw) > 1 else raw
+    if _EXPANDS.search(cd):
+        raise PatchParseError(f"the patch runs after `cd {raw}`, a directory the shell expands "
+                              "(a variable, `~` or a substitution) and the guard cannot; cd to the "
+                              "literal path, or pass it as the patch tool's own directory")
+    return cd
+
+
 def shell_patch(cmd: str) -> tuple[str, str | None] | None:
     """(patch text, cd dir or None) when the shell command runs apply_patch; None when it does not.
     When apply_patch is run but no Begin..End block can be found, the text returned is '' so the
@@ -367,16 +392,11 @@ def shell_patch(cmd: str) -> tuple[str, str | None] | None:
     m = _SHELL_FORM.match(cmd)
     cd = None
     if m:
-        cd = m.group("dir")
-        if cd and cd[0] in "'\"":
-            cd = cd[1:-1]
+        cd = _literal_cd(m.group("dir"))
     else:
         mc = _CODEX_ARG.match(cmd)
         if mc:                               # `codex --codex-run-as-apply-patch '<patch>'` (item 6)
-            cd = mc.group("dir")
-            if cd and cd[0] in "'\"":
-                cd = cd[1:-1]
-            return mc.group("body"), cd
+            return mc.group("body"), _literal_cd(mc.group("dir"))
         if not (_ANY_POSITION.search(cmd) or _runs_patch(cmd)):
             return None
     start, end = cmd.find(BEGIN), cmd.rfind(END)
