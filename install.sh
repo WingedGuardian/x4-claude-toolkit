@@ -30,7 +30,12 @@ AGENT="all"
 #: `--method global` copied ITS skills. Only `--toolkit` names the toolkit destination; an
 #: inherited value is a default, said out loud (TOOLKIT_FROM_ENV) and never paired with an
 #: --over-existing suggestion.
-GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
+#: AND X4_GAME (FX-B3, reviewer F M6): the same class. `--method global` writes X4_GAME into
+#: ~/.claude/settings.json env, so every agent session inherits it, and an in-game install
+#: under `--yes` adopted it as a NAMED destination -- the user's live game root. Only --game
+#: names it; an inherited value is a default, said out loud (GAME_FROM_ENV).
+GAME_NAMED=detected
+GAME_FROM_ENV=$([ -n "${X4_GAME:-}" ] && echo 1 || echo 0)
 TOOLKIT_NAMED=detected
 TOOLKIT_FROM_ENV=$([ -n "${X4_TOOLKIT:-}" ] && echo 1 || echo 0)
 #: The path variables this run INHERITED (not flags). Each one used is printed before any
@@ -97,7 +102,7 @@ _x4_unherit() { X4_INHERITED_PATHS=" ${X4_INHERITED_PATHS# } "; X4_INHERITED_PAT
 while [ $# -gt 0 ]; do
   case "$1" in
     --method) need2 "$1" $#; METHOD="$2"; shift 2;;
-    --game) need2 "$1" $#; GAME="$2"; GAME_NAMED=named; _x4_unherit X4_GAME; shift 2;;
+    --game) need2 "$1" $#; GAME="$2"; GAME_NAMED=named; GAME_FROM_ENV=0; _x4_unherit X4_GAME; shift 2;;
     --profile) need2 "$1" $#; PROFILE="$2"; _x4_unherit X4_PROFILE; shift 2;;
     --toolkit) need2 "$1" $#; TOOLKIT="$2"; TOOLKIT_NAMED=named; TOOLKIT_FROM_ENV=0; shift 2;;
     --mods) need2 "$1" $#; MODS="$2"; _x4_unherit X4_MODS; shift 2;;
@@ -1870,6 +1875,10 @@ require_direction() {
       echo "  Nothing named that path -- it came from \$X4_TOOLKIT, INHERITED from your environment" >&2
       echo "  (usually your live toolkit), and nobody will see a prompt before the write starts." >&2
       echo "  Name the destination explicitly:  --toolkit \"<the folder you mean>\"" >&2
+    elif [ "$GAME_FROM_ENV" = 1 ] && [ "$METHOD" = in-game ]; then
+      echo "  Nothing named that path -- it came from \$X4_GAME, INHERITED from your environment" >&2
+      echo "  (a --method global install puts it in every agent session), and nobody will see a" >&2
+      echo "  prompt before the write starts. Name it explicitly:  --game \"<the game folder you mean>\"" >&2
     else
       echo "  Nothing named that path -- it came from scanning the usual Steam locations," >&2
       echo "  and nobody will see a prompt before the write starts." >&2
@@ -2506,7 +2515,14 @@ elif [ "$DO_UNPACK" = 1 ]; then
   echo "Unpacking reference/ ..."
   # --toolkit (FX-B2): the unpack acts for the toolkit it LIVES in and refuses an inherited
   # X4_TOOLKIT naming another one unless told -- and this run INSTALLED $TOOLKIT.
-  ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh --toolkit "$TOOLKIT" ) \
+  # --reference (FX-B3, reviewer F M1): the tree THIS run configured. Without it a shell
+  # exporting a different X4_REFERENCE made `--reference R2 --unpack` refuse (the unpack saw
+  # the inherited value disagree with the config) and the install end INCOMPLETE. The
+  # unpack also reads THIS run's config and game: an inherited X4_CONFIG would have chosen
+  # another config, and an inherited X4_GAME outranks the --game this run was given.
+  ( cd "$TOOLKIT" && export X4_CONFIG="" && { [ -z "$GAME" ] || export X4_GAME="$GAME"; } \
+      && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh --toolkit "$TOOLKIT" \
+           --reference "${REFERENCE:-$TOOLKIT/reference}" ) \
     || add_failed "bin/unpack-reference.sh"
 fi
 

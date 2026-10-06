@@ -223,14 +223,73 @@ def test_FXB2_an_UNREADABLE_location_makes_the_walk_say_PARTIAL(tmp_path, monkey
     (home / "Documents" / "Egosoft").mkdir(parents=True)
     (home / "Documents" / "Egosoft" / "X4").write_text("not a folder", encoding="utf-8")
     monkeypatch.setenv("X4_SCAN_HOME", str(home))
-    m.profile_ids_from([], m._profile_docs_dirs())
-    note = m.profile_walk_note()
+    bad = []
+    m.profile_ids_from([], m._profile_docs_dirs(), bad)
+    note = m.profile_walk_note(bad)
     assert "PARTIAL" in note and "1 could not be read" in note, note
 
 
 def test_FXB2_TWIN_absent_locations_are_not_PARTIAL(tmp_path, monkeypatch):
     m = _load_scanner()
     monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "home"))
-    m.profile_ids_from([], m._profile_docs_dirs())
-    note = m.profile_walk_note()
+    bad = []
+    m.profile_ids_from([], m._profile_docs_dirs(), bad)
+    note = m.profile_walk_note(bad)
     assert "PARTIAL" not in note and "0 of 3" in note, note
+
+
+# ------------------ FX-B3 (reviewer F M7): PARTIAL is not clean; the unreadable list is per call
+
+def _unreadable_home(tmp_path: Path) -> None:
+    """A known profile location that EXISTS and cannot be listed: a FILE where the folder is."""
+    (tmp_path / "home" / "Documents" / "Egosoft").mkdir(parents=True)
+    (tmp_path / "home" / "Documents" / "Egosoft" / "X4").write_text("x", encoding="utf-8")
+
+
+def test_FXB3_a_PARTIAL_walk_with_nothing_found_EXITS_3_not_0(tmp_path):
+    """It was a note and exit 0: a scan that could not look where an id lives read clean."""
+    repo = _repo(tmp_path, "nothing to see\n")
+    _unreadable_home(tmp_path)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "PARTIAL" in r.stdout and "NOT a clean result" in r.stdout, r.stdout
+    assert "clean - no contributor" not in r.stdout, r.stdout
+
+
+def test_FXB3_TWIN_the_same_scan_with_the_location_ABSENT_is_clean(tmp_path):
+    repo = _repo(tmp_path, "nothing to see\n")
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 0 and "clean - no contributor" in r.stdout, r.stdout + r.stderr
+
+
+def test_FXB3_TWIN_a_FINDING_still_wins_over_PARTIAL(tmp_path):
+    """1 (found) outranks 3: a partial walk must not hide what the scan DID find."""
+    repo = _repo(tmp_path, "C:/Users/someone/Documents/Egosoft/X4/%s/save\n" % FAKE_ID)
+    _unreadable_home(tmp_path)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_FXB3_the_HISTORY_mode_with_a_PARTIAL_walk_EXITS_3(tmp_path):
+    repo = _repo(tmp_path, "clean\n")
+    base = _git(repo, "rev-parse", "HEAD~1").stdout.strip()
+    _unreadable_home(tmp_path)
+    r = subprocess.run([sys.executable, str(repo / "scripts" / SCRIPT.name), "--history",
+                        base + "..HEAD"], cwd=str(repo), capture_output=True, text=True,
+                       env=_env(tmp_path), timeout=120)
+    assert r.returncode == 3, r.stdout + r.stderr
+
+
+def test_FXB3_the_unreadable_list_is_PER_CALL_not_module_global(tmp_path, monkeypatch):
+    """It was a module-global list appended on every call: a second walk over a HEALTHY
+    machine still reported the first walk's failure."""
+    m = _load_scanner()
+    _unreadable_home(tmp_path)
+    monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "home"))
+    first, second = [], []
+    m.profile_ids_from([], m._profile_docs_dirs(), first)
+    monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "healthy-home"))
+    m.profile_ids_from([], m._profile_docs_dirs(), second)
+    assert len(first) == 1 and second == [], (first, second)
+    assert "PARTIAL" not in m.profile_walk_note(second)
+    assert not hasattr(m, "_UNREADABLE"), "the module-global list is back"

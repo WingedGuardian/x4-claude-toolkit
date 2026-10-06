@@ -710,10 +710,98 @@ def env_root_conflicts(*names: str) -> list[tuple[str, tuple[str, ...], Path, Pa
     return out
 
 
-def env_root_refusal(action: str, flags: dict[str, str], *names: str) -> str | None:
+# --- an INHERITED X4_CONFIG vs the acting toolkit (FX-B3, delta review reviewer F) ------------
+#
+# `env_root_conflicts` compares the environment against "the acting toolkit's config" -- but
+# WHICH file that is was chosen by $X4_CONFIG (`_locate_config`, explicit branch), which the
+# shell inherits like any other variable. With X4_CONFIG naming toolkit A's config,
+# `x4refguard apply --toolkit B --yes` targeted A's reference, `remove` reported on A's tree
+# (exit 0, no warning) and `x4lock status --toolkit B` listed A's x4-paths.env, never B's
+# (MEASURED). An X4_CONFIG naming a MISSING file disabled the comparison outright (no config
+# read -> nothing to disagree with), with only the missing-file notice.
+
+def _inside(p: Path, root: Path) -> bool:
+    try:
+        rp = os.path.normcase(str(Path(p).resolve()))
+        rr = os.path.normcase(str(Path(root).resolve()))
+    except OSError:
+        rp = os.path.normcase(os.path.abspath(str(p)))
+        rr = os.path.normcase(os.path.abspath(str(root)))
+    return rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep)
+
+
+def config_conflict() -> tuple[Path, Path, bool] | None:
+    """`(acting toolkit, the file $X4_CONFIG names, whether it exists)` when $X4_CONFIG is set
+    AND names a missing file or one OUTSIDE the acting toolkit, else None.
+
+    Only when the acting toolkit is EXPLICIT -- `--toolkit`, or the toolkit this code lives
+    in. Code outside the toolkit layout acts for `$X4_TOOLKIT`, itself inherited, so there is
+    no independent toolkit for X4_CONFIG to disagree with (and that case keeps its old,
+    documented behaviour)."""
+    explicit = os.environ.get("X4_CONFIG")
+    if not explicit:
+        return None
+    acting = _EXPLICIT if _EXPLICIT is not None else _SELF
+    if acting is None:
+        return None
+    p = Path(native(explicit))
+    exists = p.is_file()
+    if exists and _inside(p, acting):
+        return None
+    return acting, p, exists
+
+
+def _config_conflict_text(action: str, flags: dict[str, str], names: tuple[str, ...],
+                          lifted_by_flags: bool) -> str | None:
+    c = config_conflict()
+    if c is None:
+        return None
+    if lifted_by_flags and names and all(
+            any(k in _EXPLICIT_ROOTS for k in ROOT_KEYS[n]) for n in names):
+        return None                     # every root acted on was chosen by a flag
+    acting, p, exists = c
+    what = ("names a file that does not exist, so NO config is read and every root falls "
+            "back to the environment or a default" if not exists else
+            "names a config OUTSIDE this toolkit, so that config -- not this toolkit's -- "
+            "decides what is acted on")
+    lines = [f"REFUSED: `{action}` changes your system, and $X4_CONFIG ({p}) {what}. "
+             f"Nothing was changed.",
+             f"  acting toolkit: {acting}  (its config: {config_file_in(acting)})",
+             f"  Unset X4_CONFIG in this shell (or point it at {config_file_in(acting)}) to "
+             f"act on this toolkit's config."]
+    chosen = [flags[n] for n in names if n in flags]
+    if lifted_by_flags and chosen:
+        lines.append(f"  Or choose the root explicitly: {' and '.join(chosen)} DIR.")
+    return "\n".join(lines)
+
+
+def config_notice() -> None:
+    """ONE stderr line per process for a read-only command while $X4_CONFIG names a config
+    outside the acting toolkit (or a missing file): what follows is THAT config's answer."""
+    c = config_conflict()
+    if c is None or "config-conflict" in _NOTICED:
+        return
+    _NOTICED.add("config-conflict")
+    _NOTICED.add("explicit-missing:" + os.environ["X4_CONFIG"])   # this line says it: ONE line
+    acting, p, exists = c
+    state = "which does not exist" if not exists else "outside this toolkit"
+    print(f"x4 config: acting for {acting}, but $X4_CONFIG names {p} ({state}); the answers "
+          f"below follow $X4_CONFIG, not {config_file_in(acting)}. Commands that change your "
+          f"system refuse until X4_CONFIG is unset.", file=sys.stderr)
+
+
+def env_root_refusal(action: str, flags: dict[str, str], *names: str,
+                     config_lifted_by_flags: bool = True) -> str | None:
     """The refusal for a SYSTEM-CHANGING *action* while an exported variable moves one of
     *names* away from the acting toolkit's config, else None. *flags* maps an accessor to the
-    command-line flag that chooses it explicitly. Paths and variable NAMES, never a secret."""
+    command-line flag that chooses it explicitly. Paths and variable NAMES, never a secret.
+
+    FX-B3: first, an inherited $X4_CONFIG naming a config outside the acting toolkit (or a
+    missing file) refuses -- unless every root in *names* was chosen by its flag and
+    *config_lifted_by_flags* (False for a command that acts on more than those roots)."""
+    text = _config_conflict_text(action, flags, names, config_lifted_by_flags)
+    if text:
+        return text
     found = env_root_conflicts(*names)
     if not found:
         return None
@@ -736,6 +824,7 @@ def env_root_refusal(action: str, flags: dict[str, str], *names: str) -> str | N
 def env_root_notice(*names: str) -> None:
     """ONE stderr line per root per process for a read-only command: the environment moves
     a root away from the config, and the answer below follows the environment."""
+    config_notice()
     for name, keys, eff, cfg in env_root_conflicts(*names):
         key = "env-root:" + name
         if key in _NOTICED:

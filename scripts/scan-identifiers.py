@@ -34,7 +34,10 @@ CI logs are public. A guard that echoes the string it caught publishes the thing
 it exists to suppress. Only `path:line` is ever printed.
 
 Exit codes: 0 clean - 1 identifiers found - 2 cannot run (so a failure to scan
-can never be mistaken for a clean scan).
+can never be mistaken for a clean scan) - 3 nothing found, but the profile-id walk
+was PARTIAL: a known X4 profile location exists and could not be read, so a profile
+id kept there was never banned. NOT clean (FX-B3); fix the location's permissions,
+or name the id through X4_PROFILE, and re-run.
 """
 
 from __future__ import annotations
@@ -157,13 +160,14 @@ def _profile_docs_dirs() -> list[Path]:
             home / ".config" / "EgoSoft" / "X4"]
 
 
-#: Locations the last walk could NOT read although they exist (FX-B2): the walk was PARTIAL.
-_UNREADABLE: list[Path] = []
-
-
-def profile_ids_from(values: list[str], docs_dirs: list[Path]) -> set[str]:
+def profile_ids_from(values: list[str], docs_dirs: list[Path],
+                     unreadable: list[Path] | None = None) -> set[str]:
     """Pure: the profile ids named by `values` (paths; the last component) and found as
-    `<digits>` folders under `docs_dirs`. Placeholders are never ids."""
+    `<digits>` folders under `docs_dirs`. Placeholders are never ids.
+
+    *unreadable*, when given, receives every location that EXISTS but could not be read --
+    the walk was PARTIAL (FX-B2). Per call (FX-B3): it was a module-global list that grew
+    on every call, so a second walk inherited the first one's failures."""
     out: set[str] = set()
     for v in values:
         name = Path(str(v).rstrip("/" + chr(92)).replace(chr(92), "/")).name
@@ -175,26 +179,37 @@ def profile_ids_from(values: list[str], docs_dirs: list[Path]) -> set[str]:
         except FileNotFoundError:
             continue                       # not this platform's location: nothing to read
         except OSError:
-            _UNREADABLE.append(d)          # exists, could not be read: the walk is PARTIAL
+            if unreadable is not None:     # exists, could not be read: the walk is PARTIAL
+                unreadable.append(d)
             continue
     return out - PLACEHOLDER_IDS
 
 
-def profile_walk_note() -> str:
+def profile_walk_note(unreadable: list[Path]) -> str:
     """How much of the profile-id walk actually ran -- PARTIAL when a known location exists
-    but could not be read (FX-B2: such a location was skipped in silence)."""
+    but could not be read (FX-B2: such a location was skipped in silence). *unreadable* is
+    the list THAT walk filled (`profile_ids_from`)."""
     dirs = _profile_docs_dirs()
     present = [d for d in dirs if d.is_dir()]
     note = ("profile-id walk: %d of %d known profile location(s) exist here"
             % (len(present), len(dirs)))
-    if _UNREADABLE:
+    if unreadable:
         note += ("; PARTIAL -- %d could not be read, so an id there is NOT banned: %s"
-                 % (len(_UNREADABLE), ", ".join(str(d) for d in _UNREADABLE)))
+                 % (len(unreadable), ", ".join(str(d) for d in unreadable)))
     return note
 
 
-def derived_profile_ids() -> set[str]:
-    return profile_ids_from(_profile_values(), _profile_docs_dirs())
+def derived_profile_ids(unreadable: list[Path] | None = None) -> set[str]:
+    return profile_ids_from(_profile_values(), _profile_docs_dirs(), unreadable)
+
+
+def _partial_verdict(unreadable: list[Path]) -> int:
+    """Exit 3 and why, for a scan that found nothing over a PARTIAL profile-id walk."""
+    print(f"::error::nothing found, but the profile-id walk was PARTIAL: {len(unreadable)} "
+          f"known profile location(s) exist and could not be read, so a profile id there was "
+          f"never banned. This is NOT a clean result (exit 3). Fix the permissions, or name "
+          f"the id through X4_PROFILE, and re-run.")
+    return 3
 
 
 def profile_id_match(line: str, ids: set[str]) -> bool:
@@ -622,10 +637,11 @@ def main() -> int:
         print(f"::error::cannot run the identifier scan: {exc}")
         return 2
 
-    ids = derived_profile_ids()
+    walk_unreadable: list[Path] = []
+    ids = derived_profile_ids(walk_unreadable)
     notes.append(f"{len(ids)} X4 profile id(s) derived on this machine (banned bare; never "
                  f"printed){'' if ids else ' -- none here, so a bare id cannot be recognised'}")
-    notes.append(profile_walk_note())
+    notes.append(profile_walk_note(walk_unreadable))
     for n in notes:
         print(f"  {n}")
 
@@ -635,7 +651,8 @@ def main() -> int:
                   "scan proves nothing. Refusing rather than reporting a "
                   "vacuous pass.")
             return 2
-        return scan_history(hist, banned, ids)
+        rc = scan_history(hist, banned, ids)
+        return _partial_verdict(walk_unreadable) if rc == 0 and walk_unreadable else rc
 
     files = merged_population(tracked, untracked)
     if not files:
@@ -718,6 +735,8 @@ def main() -> int:
         if len(unreadable) > 8:
             print(f"      ... and {len(unreadable) - 8} more NOT LISTED")
         return 2
+    if walk_unreadable:
+        return _partial_verdict(walk_unreadable)
     print(f"clean - no contributor identifiers in {scanned} file(s) READ "
           f"({len(untracked)} of them not yet tracked).")
     return 0

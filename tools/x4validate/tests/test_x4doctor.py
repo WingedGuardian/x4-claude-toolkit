@@ -210,6 +210,9 @@ def sandbox(tmp_path, monkeypatch):
     for d in (game / "extensions", ref / "libraries"):
         d.mkdir(parents=True)
     (ref / "libraries" / "wares.xml").write_text("<wares/>\n", encoding="utf-8")
+    # A FINISHED unpack (FX-B3): the sentinel is what x4refguard apply demands, and the
+    # layer2 rows below test the apply hint. The no-sentinel case has tests of its own.
+    (ref / ".unpacked-and-locked").write_text("buildid 1\n", encoding="utf-8")
     shutil.copytree(REPO / ".claude" / "hooks", root / ".claude" / "hooks",
                     ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     shutil.copy2(REPO / ".claude" / "settings.json", root / ".claude" / "settings.json")
@@ -422,11 +425,14 @@ def test_an_UNSET_game_root_is_FAIL(sandbox):
     assert rows["roots.game"].status == doc.FAIL, rows["roots.game"]
 
 
-def test_a_reference_not_unpacked_YET_is_UNKNOWN_not_FAIL_nor_OK(sandbox, tmp_path):
+def test_a_reference_not_unpacked_YET_is_the_users_STEP_not_FAIL_nor_OK(sandbox, tmp_path):
+    """FX-B3: was UNKNOWN (exit 3, "can't tell"). A fresh install before its unpack step is a
+    KNOWN state: TODO (exit 4), naming the unpack command."""
     _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root,
               X4_GAME=sandbox.game, X4_REFERENCE=tmp_path / "not-yet")
     rows = sandbox.rows(doc.check_roots)
-    assert rows["roots.reference"].status == doc.UNKNOWN, rows["roots.reference"]
+    assert rows["roots.reference"].status == doc.TODO, rows["roots.reference"]
+    assert "unpack-reference.sh" in rows["roots.reference"].detail, rows["roots.reference"]
 
 
 def test_the_roots_rows_NAME_the_config_file_each_side_read(sandbox):
@@ -1471,3 +1477,55 @@ def test_TWIN_a_generic_only_install_still_lists_generic(tmp_path):
                   targets={"claude": False, "codex": False, "generic": True, "opencode": False})
     line = [l for l in doc.render_text(ctx, [], 0, 0.0).splitlines() if l.startswith("  targets:")][0]
     assert "generic" in line, line
+
+
+# ------------- FX-B3 (reviewer F M2/M3): the layer2 hint is a command that WORKS in its case
+
+def _layer2_row(sandbox):
+    return {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+
+
+def _unpack_path_in(detail):
+    m = re.search(r'bash "([^"]+unpack-reference\.sh)" --toolkit "([^"]+)"', detail)
+    return m and Path(m.group(1))
+
+
+def test_FXB3_layer2_WITH_the_sentinel_says_apply(sandbox):
+    """The REAL x4refguard on a finished, unprotected unpack: apply is the step, and works."""
+    r = _layer2_row(sandbox)
+    assert r.status == doc.TODO and 'x4refguard.py" apply ' in r.detail, r
+    assert "unpack-reference.sh" not in r.detail, r
+
+
+def test_FXB3_layer2_WITHOUT_the_sentinel_says_UNPACK_not_apply(sandbox):
+    """apply REFUSES a tree with no .unpacked-and-locked; the row told the user to run it."""
+    (sandbox.ref / ".unpacked-and-locked").unlink()
+    r = _layer2_row(sandbox)
+    assert r.status == doc.TODO and "not a finished unpack" in r.detail, r
+    assert "-- run: bash" in r.detail and "would refuse" in r.detail, r
+    p = _unpack_path_in(r.detail)
+    assert p is not None and p.is_absolute() and p.is_file(), r
+
+
+def test_FXB3_layer2_PARTIAL_without_the_sentinel_says_remove_then_unpack(sandbox, monkeypatch):
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("partial"))
+    (sandbox.ref / ".unpacked-and-locked").unlink()
+    r = _layer2_row(sandbox)
+    assert r.status == doc.FAIL and '" remove, then bash' in r.detail, r
+
+
+def test_FXB3_layer2_NO_reference_yet_is_a_TODO_with_the_unpack_command(sandbox):
+    """x4refguard reports a missing tree as "unconfigured"; the row said UNKNOWN (exit 3) on
+    every fresh install before its unpack. Now the user's step (TODO, exit 4)."""
+    shutil.rmtree(sandbox.ref)
+    r = _layer2_row(sandbox)
+    assert r.status == doc.TODO and "not unpacked yet" in r.detail, r
+    assert _unpack_path_in(r.detail) is not None, r
+
+
+def test_FXB3_TWIN_unconfigured_with_the_tree_PRESENT_stays_UNKNOWN(sandbox, monkeypatch):
+    """Clause twin: only a MISSING tree is the known pre-unpack state; an "unconfigured"
+    answer about a folder that exists is a real can't-tell."""
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("unconfigured"))
+    r = _layer2_row(sandbox)
+    assert r.status == doc.UNKNOWN, r

@@ -349,6 +349,10 @@ def _candidates() -> list[Path]:
         out.extend(_config_files_in(_HERE.parent))
     else:
         out.extend(_waiver_replacements())
+    # FX-B3: an explicit --toolkit's OWN config is in play too. `status --toolkit B` under an
+    # inherited X4_CONFIG naming A's listed A's file and never B's.
+    if _paths is not None and _paths.explicit_toolkit() is not None:
+        out.extend(_config_files_in(_paths.explicit_toolkit()))
     env_file = _paths._find_env_file() if _paths is not None else None
     if env_file:
         out.append(Path(env_file))
@@ -659,9 +663,13 @@ def main(argv=None) -> int:
         if args.cmd in ("lock", "unlock"):
             # FX-B2: an INHERITED X4_GAME / X4_MODS outranks the acting toolkit's config, so a
             # lock could act on another install's files. A difference refuses, naming both.
+            # FX-B3: an inherited X4_CONFIG naming another toolkit's config (or a missing
+            # file) refuses too -- and no --game/--registry lifts it: the manifest also locks
+            # the config file in play, which X4_CONFIG alone chooses.
             refusal = _paths.env_root_refusal("x4lock " + args.cmd,
                                               {"game_root": "--game", "registry": "--registry"},
-                                              "game_root", "registry")
+                                              "game_root", "registry",
+                                              config_lifted_by_flags=False)
             if refusal:
                 print(refusal, file=sys.stderr)
                 return 2

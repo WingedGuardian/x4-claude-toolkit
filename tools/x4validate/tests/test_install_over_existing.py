@@ -221,6 +221,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     for a in it:
         if a == "--game":
             common["game"] = next(it)
+        elif a == "--reference":
+            common["reference"] = next(it)
         elif a == "--agent":
             common["agent"] = next(it)
         elif a == "--dry-run":
@@ -2830,8 +2832,17 @@ def _doctor_env(tmp_path: pathlib.Path, **extra) -> dict:
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 @pytest.mark.parametrize("method", ["separate", "in-game"])
-def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path):
-    """MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
+def test_x4doctor_on_a_healthy_fresh_install_leaves_ONLY_the_users_steps_open_exit_4(
+        installer, method, tmp_path):
+    """FX-B3 (reviewer F M3): this was named `..._EXITS_0_...` while it asserted exit 4 -- the
+    name described a goal the FX-B2 change had (rightly) given up, not what is checked.
+
+    Two states of the same install: BEFORE the unpack (no reference/ -- the user's steps are
+    the unpack, rows roots.reference + layer2.reference, both TODO; was UNKNOWN, exit 3) and
+    with a reference/ that is not a finished unpack (layer2 alone, and its hint is the unpack,
+    because `apply` refuses a tree without the sentinel).
+
+    MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
     x4doctor exit 3 -- parity.claude UNKNOWN ('X4_TOOLKIT is unset'), x4lock UNKNOWN ('1
     unlocked'), and with X4_TOOLKIT set parity.claude read 'no agent/ source' UNKNOWN. A
     doctor that cannot exit 0 on a healthy install trains its reader to ignore it. 'Healthy'
@@ -2846,11 +2857,23 @@ def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path
         dest = game
     r = _install(installer, tmp_path, dest, *extra, method=method)
     assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+
+    def doctor():
+        d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root",
+                            str(dest), "--json"], capture_output=True, text=True, timeout=300,
+                           env=_doctor_env(tmp_path), cwd=str(tmp_path))
+        return d, json.loads(d.stdout)
+
+    assert not (dest / "reference").exists(), "fixture: the install unpacked nothing"
+    d0, got0 = doctor()
+    open0 = sorted((c["id"], c["status"]) for c in got0["checks"] if c["status"] not in ("OK", "N/A"))
+    assert d0.returncode == 4 and open0 == [("layer2.reference", "TODO"),
+                                            ("roots.reference", "TODO")], (d0.returncode, open0)
+    assert all("unpack-reference.sh" in c["detail"] for c in got0["checks"]
+               if c["status"] == "TODO"), got0["checks"]
+
     (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
-    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest),
-                        "--json"], capture_output=True, text=True, timeout=300,
-                       env=_doctor_env(tmp_path), cwd=str(tmp_path))
-    got = json.loads(d.stdout)
+    d, got = doctor()
     # FX-B2: an unprotected reference/ is the USER's pending step on every root (TODO, exit 4),
     # never OK -- the installers do not apply Layer 2. It is the ONLY item allowed to be open.
     bad = [(c["id"], c["status"], c["detail"][:200]) for c in got["checks"]
@@ -2859,6 +2882,8 @@ def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path
     todo = [c["id"] for c in got["checks"] if c["status"] == "TODO"]
     assert d.returncode == 4 and not bad and todo == ["layer2.reference"], (d.returncode, bad, todo)
     assert sum(c["status"] == "OK" for c in got["checks"]) >= 10, got["checks"]
+    l2 = [c["detail"] for c in got["checks"] if c["id"] == "layer2.reference"][0]
+    assert "not a finished unpack" in l2 and "unpack-reference.sh" in l2, l2
 
 
 def test_TWIN_x4doctor_on_a_fresh_install_still_FAILS_a_missing_game(tmp_path):
@@ -3575,3 +3600,107 @@ def test_FXB2_6_setup_reads_the_config_with_the_SAME_grammar(tmp_path, loader, l
         assert "X4_GAME is set in x4-paths.env" in r.stdout, r.stdout[-2000:]
     else:
         assert "Set X4_GAME in x4-paths.env" in r.stdout, r.stdout[-2000:]
+
+
+# ---------------- FX-B3: --unpack gets THIS run's reference / config / game; X4_GAME inherited
+
+def _unpack_seams(tmp_path):
+    """A fake xrcat and a stub x4refguard: the real unpack path, no game, no ACL."""
+    (tmp_path / "game" / "01.cat").write_text("", encoding="utf-8")
+    fake = tmp_path / "fakexrcat"
+    fake.write_text('#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = -out ] && o="$2"; shift; done\n'
+                    'mkdir -p "$o/libraries"; echo x > "$o/libraries/f.xml"\n',
+                    encoding="utf-8", newline="\n")
+    fake.chmod(0o755)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('{\"state\": \"absent\"}')\nsys.exit(0)\n", encoding="utf-8")
+    return {"X4_XRCAT": fake.as_posix(), "X4_UNPACK_FLOOR": "1", "X4_REFGUARD_SCRIPT": stub.as_posix()}
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_uses_the_reference_THIS_run_configured(installer, tmp_path):
+    """Reviewer F M1: `--reference R2 --unpack` in a shell exporting a different X4_REFERENCE.
+    The installers passed --toolkit but not --reference, so the unpack saw the inherited
+    value disagree with the config R2 and REFUSED: install INCOMPLETE."""
+    dest = _fresh(tmp_path)
+    r2, other = tmp_path / "r2", tmp_path / "inherited-ref"
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--reference", r2.as_posix(),
+                 "--unpack", inherit={"X4_REFERENCE": other.as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-2500:]
+    assert "INCOMPLETE" not in out and "REFUSED" not in out, out[-2500:]
+    assert (r2 / "libraries" / "f.xml").is_file() and not other.exists(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_reads_THIS_run_s_game_not_an_inherited_X4_GAME(installer, tmp_path):
+    """--game G with an inherited X4_GAME naming another folder: the unpack's loader lets the
+    environment win, so it read the inherited game (here: absent -> 'game dir not found')."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--unpack",
+                 inherit={"X4_GAME": (tmp_path / "not-this-game").as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "INCOMPLETE" not in out, out[-2500:]
+    assert (dest / "reference" / "libraries" / "f.xml").is_file(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_reads_THIS_run_s_config_not_an_inherited_X4_CONFIG(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    elsewhere = tmp_path / "elsewhere.env"
+    elsewhere.write_text('X4_REFERENCE="%s"\n' % (tmp_path / "theirs").as_posix(), encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--unpack",
+                 inherit={"X4_CONFIG": elsewhere.as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "INCOMPLETE" not in out, out[-2500:]
+    assert (dest / "reference" / "libraries" / "f.xml").is_file(), out[-2500:]
+    assert not (tmp_path / "theirs").exists(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_an_INHERITED_X4_GAME_is_not_a_named_in_game_destination(installer, tmp_path):
+    """Reviewer F M6: an inherited X4_GAME counted as a NAMED destination, so an in-game
+    install under --yes wrote into whatever game root the shell carried (a --method global
+    install puts X4_GAME in every agent session). Refused, naming the variable; nothing written."""
+    _fresh(tmp_path)
+    game = tmp_path / "game"
+    r = _install(installer, tmp_path, game, "--dry-run", method="in-game", omit=("game",),
+                 over_existing=False, inherit={"X4_GAME": game.as_posix()})
+    out = r.stdout + r.stderr
+    assert r.returncode == 2, out[-2000:]
+    assert "INHERITED" in out and "X4_GAME" in out, out[-2000:]
+    assert not (game / "scripts").exists() and not (game / ".claude").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_TWIN_an_explicit_game_with_an_inherited_X4_GAME_proceeds(installer, tmp_path):
+    _fresh(tmp_path)
+    game = tmp_path / "game"
+    r = _install(installer, tmp_path, game, "--dry-run", method="in-game", over_existing=False,
+                 inherit={"X4_GAME": (tmp_path / "another-game").as_posix()})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "REFUSING" not in out, out[-2000:]
+
+
+def test_FXB3_every_CI_powershell_install_leg_is_ISOLATED():
+    """Reviewer F M4: ci.yml isolated only the two `separate` PowerShell legs (FX-B2: HKCU
+    persists across a runner's steps, so one leg's X4_TOOLKIT write reached the next as a
+    "different existing value"). The in-game and global legs ran on the default key with the
+    inherited X4_TOOLKIT. Every step that runs install.ps1 must set its OWN test key under
+    X4ToolkitTests and drop X4_TOOLKIT, before its first install.ps1 call."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # one block per step (no YAML library in the venv): split at each `- name:` item
+    blocks = re.split(r"(?m)^\s*- name: ", text)[1:]
+    steps = [{"name": b.splitlines()[0], "run": b} for b in blocks
+             if "install.ps1" in b and ("shell: pwsh" in b or "shell: powershell" in b)]
+    assert len(steps) >= 4, [st["name"] for st in steps]
+    keys = []
+    for st in steps:
+        run = st["run"]
+        first = run.index("install.ps1 -Method")
+        m = re.search(r"\$env:X4_INSTALL_ENV_REGKEY = '(HKCU\\Software\\X4ToolkitTests\\[^']+)'",
+                      run[:first])
+        assert m, "%s: no isolated test key before install.ps1" % st["name"]
+        assert "Remove-Item -LiteralPath env:X4_TOOLKIT" in run[:first], st["name"]
+        keys.append(m.group(1))
+    assert len(set(keys)) == len(keys), keys

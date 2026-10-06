@@ -136,7 +136,13 @@ def _sandbox(tmp_path, monkeypatch):
     # on a developer machine a real one, whose X4_REFERENCE differs from the scratch tree the
     # tests export, and an apply/remove then (correctly) refuses on the disagreement. An
     # X4_CONFIG naming no file means "read none": the exported X4_REFERENCE is the config.
-    monkeypatch.setenv("X4_CONFIG", str(tmp_path / "no-x4-paths.env"))
+    # FX-B3: that idiom now REFUSES apply/remove; the acting toolkit is instead a scratch
+    # folder holding NO config, which reads none just the same.
+    monkeypatch.delenv("X4_CONFIG", raising=False)
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    (tmp_path / "kit").mkdir()
+    monkeypatch.setattr(_paths, "_SELF", tmp_path / "kit", raising=False)
+    monkeypatch.setattr(_paths, "_EXPLICIT", None, raising=False)
     monkeypatch.setattr(_paths, "_NOTICED", set(), raising=False)
     _paths.reload()
     yield

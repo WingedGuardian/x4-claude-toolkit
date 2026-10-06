@@ -582,8 +582,12 @@ def check_roots(ctx: Ctx) -> list[Check]:
         if not ref:
             return FAIL, "the guards resolve NO reference root: nothing under it is protected"
         if not Path(ref).is_dir():
-            return UNKNOWN, ("the guards protect %s, which does not exist yet (not unpacked?); "
-                             "nothing is there to damage" % ref)
+            # FX-B3: a fresh install before its unpack step is a KNOWN, normal state -- the
+            # user's step (TODO, exit 4), not a can't-tell (UNKNOWN, exit 3).
+            return TODO, ("YOUR STEP: the guards protect %s, which does not exist yet (not "
+                          "unpacked) -- run: %s. Nothing is there to damage meanwhile. If your "
+                          "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
+                          % (ref, _unpack_cmd(ctx)))
         return OK, ref
 
     def _game(_):
@@ -1107,6 +1111,22 @@ def _claude_delete_hook_wired(root: Path) -> bool:
         return False
 
 
+#: The file bin/unpack-reference.sh writes LAST, after counting a complete unpack; x4refguard
+#: apply refuses a tree without it (x4refguard.SENTINEL).
+_REF_SENTINEL = ".unpacked-and-locked"
+
+
+def _unpack_cmd(ctx: Ctx) -> str:
+    """The ABSOLUTE unpack command for this root's toolkit, with --toolkit (FX-B3: a hint the
+    user can paste from any cwd, and one a foreign $X4_TOOLKIT does not refuse)."""
+    for base in (ctx.root, ctx.toolkit, HERE.parent):
+        p = Path(base) / "bin" / "unpack-reference.sh" if base else None
+        if p and p.is_file():
+            tk = p.resolve().parent.parent
+            return 'bash "%s" --toolkit "%s"' % (p.resolve().as_posix(), tk.as_posix())
+    return "bash bin/unpack-reference.sh   (from the toolkit folder)"
+
+
 def _x4refguard_module(ctx: Ctx):
     """Layer 2 (the OS-level deny-delete on reference/) is scripts/x4refguard.py -- NOT x4lock,
     which an earlier version of this check asked, so the row could never answer."""
@@ -1261,6 +1281,32 @@ def check_common(ctx: Ctx) -> list[Check]:
         if st == "protected":
             return OK, "reference/ carries the OS-level delete protection"
         apply_cmd = 'python "%s" apply' % Path(getattr(m, "__file__", "scripts/x4refguard.py")).resolve()
+        # FX-B3 (reviewer F M2/M3): the hint must be a command that WORKS in this case.
+        if st == "unconfigured" and not Path(ref).is_dir():
+            # A fresh install before its unpack step: a normal, KNOWN state -- the user's step
+            # (TODO, exit 4), not a can't-tell (UNKNOWN, exit 3). x4refguard reports it as
+            # "unconfigured" ("does not exist (not unpacked yet, or renamed or moved)").
+            return TODO, ("YOUR STEP: reference/ is not unpacked yet (%s does not exist) -- run: "
+                          "%s (it unpacks, then applies the OS-level delete protection). If your "
+                          "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
+                          % (ref, _unpack_cmd(ctx)))
+        if st in ("absent", "partial") and not (Path(ref) / _REF_SENTINEL).is_file():
+            # `apply` REFUSES a tree without the sentinel (x4refguard resolve_target), so
+            # "run: apply" was a hint that could only fail. The unpack writes the sentinel and
+            # then applies -- but it refuses a tree that carries ANY protection, so a PARTIAL
+            # one is lifted first.
+            if st == "absent":
+                return TODO, (
+                    "YOUR STEP: reference/ has NO OS-level delete protection, and it is not a "
+                    "finished unpack (no %s), so `apply` would refuse it -- run: %s (it writes "
+                    "that file, then applies the protection). Only if it IS a complete unpack you "
+                    "made yourself: %s prints how to mark it."
+                    % (_REF_SENTINEL, _unpack_cmd(ctx), apply_cmd))
+            return FAIL, (
+                "reference/ has only PARTIAL OS-level delete protection and is not a finished "
+                "unpack (no %s): neither `apply` nor the unpack will act on it as it is -- run: "
+                "%s, then %s" % (_REF_SENTINEL, apply_cmd[:-len(" apply")] + ' remove',
+                                 _unpack_cmd(ctx)))
         if st in ("absent", "partial") and not hookless:
             # FX-B2 (delta review): a Claude-only root read OK here whatever the state, saying
             # "the Claude hooks cover deletes" -- true only if they are WIRED. absent is the

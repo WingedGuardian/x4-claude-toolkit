@@ -135,7 +135,12 @@ Write-Host "X4 AI Assistant Toolkit installer (Windows) - source: $SRC"
 # second install's refusal offer -OverExisting against that live toolkit, and -Method global
 # copied ITS skills. Only -Toolkit names the toolkit destination; an inherited value is a
 # default, said out loud ($X4ToolkitFromEnv) and never paired with an -OverExisting suggestion.
-$GameNamed    = if ($Game)    { 'named' } elseif ($env:X4_GAME)    { 'named' } else { 'detected' }
+# AND X4_GAME (FX-B3, reviewer F M6): the same class. -Method global writes X4_GAME into
+# ~/.claude/settings.json env, so every agent session inherits it, and an in-game install under
+# -Yes adopted it as a NAMED destination -- the user's live game root. Only -Game names it; an
+# inherited value is a default, said out loud ($X4GameFromEnv).
+$GameNamed    = if ($Game)    { 'named' } else { 'detected' }
+$X4GameFromEnv = (-not $Game) -and [bool]$env:X4_GAME
 $ToolkitNamed = if ($Toolkit) { 'named' } else { 'detected' }
 $X4ToolkitFromEnv = (-not $Toolkit) -and [bool]$env:X4_TOOLKIT
 #: What this process inherited as X4_TOOLKIT, before anything here sets it (R4-3: the process
@@ -1723,6 +1728,10 @@ function Assert-Direction($dest, $named) {
       Write-Host '  Nothing named that path - it came from $env:X4_TOOLKIT, INHERITED from your environment' -ForegroundColor Red
       Write-Host '  (usually your live toolkit), and no one will see this before the write starts.' -ForegroundColor Red
       Write-Host '  Name the destination explicitly:  -Toolkit "<the folder you mean>"' -ForegroundColor Red
+    } elseif ($X4GameFromEnv -and $Method -eq 'in-game') {
+      Write-Host '  Nothing named that path - it came from $env:X4_GAME, INHERITED from your environment' -ForegroundColor Red
+      Write-Host '  (a -Method global install puts it in every agent session), and no one will see this' -ForegroundColor Red
+      Write-Host '  before the write starts. Name it explicitly:  -Game "<the game folder you mean>"' -ForegroundColor Red
     } else {
       Write-Host "  Nothing named that path - it came from scanning the usual Steam locations," -ForegroundColor Red
       Write-Host "  and -Yes means no one will see this before the write starts." -ForegroundColor Red
@@ -2503,8 +2512,23 @@ if ($bash) {
     if ($Unpack) {
       # --toolkit (FX-B2): the unpack acts for the toolkit it LIVES in and refuses an inherited
       # X4_TOOLKIT naming another one unless told -- and this run INSTALLED $Toolkit.
-      & $bash.Source bin/unpack-reference.sh --toolkit $Toolkit
-      if ($LASTEXITCODE -ne 0) { $failed += "bin/unpack-reference.sh (exit $LASTEXITCODE)" }
+      # --reference (FX-B3, reviewer F M1): the tree THIS run configured. Without it a shell
+      # exporting a different X4_REFERENCE made `-Reference R2 -Unpack` refuse and the install
+      # end INCOMPLETE. The unpack also reads THIS run's config and game: an inherited
+      # X4_CONFIG would have chosen another config, an inherited X4_GAME outranks -Game.
+      $unpackRef = if ($Reference) { $Reference } else { Join-DerivedPath $Toolkit 'reference' }
+      $savedCfg = $env:X4_CONFIG; $savedGame = $env:X4_GAME
+      try {
+        Remove-Item -LiteralPath env:X4_CONFIG -ErrorAction SilentlyContinue
+        if ($Game) { $env:X4_GAME = $Game }
+        & $bash.Source bin/unpack-reference.sh --toolkit $Toolkit --reference $unpackRef
+        $unpackRc = $LASTEXITCODE
+      } finally {
+        if ($null -ne $savedCfg) { $env:X4_CONFIG = $savedCfg }
+        if ($null -ne $savedGame) { $env:X4_GAME = $savedGame }
+        else { Remove-Item -LiteralPath env:X4_GAME -ErrorAction SilentlyContinue }
+      }
+      if ($unpackRc -ne 0) { $failed += "bin/unpack-reference.sh (exit $unpackRc)" }
     }
     }
   } finally {
