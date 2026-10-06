@@ -8613,3 +8613,236 @@ level below it the command reaches no rule and the advisory the plain spelling e
 the sandbox game folder was a scratch tree, not a real install. Open lead for the guard lane:
 treat a substituted verb with an operand inside an X4 folder at least as the plain delete is
 treated.
+
+## F184 — a root variable operand was its root for `cd` only, not for the write and delete rules · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (MEASURED by FX-G2).** F154 made a leading root variable its root for a `cd` target, but
+`prep()` did not apply `subst_root_var` to other operands, and the path-config pass sent only the
+config. 34 of 40 Bash and 6 of 8 PowerShell probes ALLOWED writes through a root variable --
+`> "$X4_TOOLKIT/x4-paths.env"`, `cp`/`tee`/`sed -i`/`mv` into `"$X4_REFERENCE/..."`,
+`Set-Content "$env:X4_REFERENCE/..."`, writes into `"$X4_PROFILE"` -- while the literal spellings
+were refused; `rm "$X4_TOOLKIT/x4-paths.env"` only advised, and `rm -rf "$X4_GAME"` /
+`mv "$X4_GAME"` read as an advisory instead of the game hard block. **Fix (`84330ba`):** every
+operand goes through `subst_root_var`; the config pass sends every root (plus a `config` root for
+`$X4_CONFIG`). After: 0 of 48, and the variable and literal spellings agree on 126 of 126
+verb x root x tail probes. `18a4f01` keeps a test on the name-only branch that a leading root
+variable no longer reaches (`"${PFX}$X4_GAME/x"`).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestG2ARootVariableOperandIsItsRoot`:
+`test_every_root_variable_and_verb_judges_like_the_literal`, `test_the_measured_bypasses_are_refused`
+and its five TWINs) and `scripts/test-hooks.sh`.
+
+## F185 — Windows path aliases reached a protected file under a name the guards did not recognise · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (MEASURED by FX-G2).** Windows opens `x4-paths.env.`, `x4-paths.env `, `x4-paths.env::$DATA`,
+`reference./`, `reference::$INDEX_ALLOCATION/` and an 8.3 short name (`C:/PROGRA~2/...` for the game
+folder on the maintainer's machine) as the protected file or folder; the guards compared names and
+saw something else. 19 of 28 probes allowed. **Fix (`7c0954d`):** both normalisers
+(`hook_facts.norm`, `x4_norm`) drop, per component, an NTFS stream suffix and trailing dots and
+spaces -- the conservative superset of `GetFullPathNameW` (MEASURED: it strips a final component's
+dots AND spaces but one trailing dot of an intermediate one); `protect-files.sh` canonicalises
+the path before any name test; a `~<digit>` path resolves to its long form. After: 0 of 28.
+The 90% is that only this machine's 8.3 names were probed.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestG2WindowsPathAliases`:
+`test_trailing_dots_spaces_and_stream_suffixes_are_the_file`, `test_the_rules_see_the_aliases`,
+`test_an_8dot3_short_name_is_its_long_name` and the TWINs) and `scripts/test-hooks.sh`.
+
+## F186 — a command substitution inside `$(( ))` passed the hard blocks · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (MEASURED by FX-G2).** `$((` was stepped over whole as arithmetic, at the top level and in
+an expanding heredoc body, but bash runs a substitution inside it: `echo $(( $(rm -rf <game>) + 0 ))`
+and the backtick form were ALLOWED past the game hard block (6 of 14 probes). F159's residual
+("a `$((...))` that...") is the same shape. **Fix (`38416b9`):** arithmetic yields the
+substitutions inside it, and `$((cmd) )` -- a command substitution holding a subshell (MEASURED in
+bash) -- is a command. One helper, `_dollar_double_paren`.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestG2SubstitutionInsideArithmetic`:
+`test_a_substitution_inside_arithmetic_reaches_the_hard_block`,
+`test_the_helper_tells_arithmetic_from_a_subshell`, `test_TWIN_plain_arithmetic_is_still_not_a_command`,
+`test_TWIN_single_quotes_and_a_quoted_heredoc_stay_literal`).
+
+## F187 — an abbreviated git long option slipped past the wipe rules · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (MEASURED by FX-G2 in a scratch repo).** git accepts any unambiguous prefix of a long
+option: `git stash --a` and `git clean --fo -X` deleted ignored files, while the wipe rules
+(F148, `git stash --all`) matched only the full spellings; `--al`, `--har`, `--fo` reached no deny.
+**Fix (`38416b9`):** `_git_long` matches prefixes for `--force`, `--dry-run`, `--hard`, `--all`,
+`--no-all`, `--include-untracked` and `--message`.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestG2GitLongOptionAbbreviations`:
+`test_an_abbreviated_destructive_option_is_the_option` and three TWINs).
+
+## F188 — a patch run spelled other than `apply_patch` was not judged as a patch · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer A, MEASURED).** `codex --codex-run-as-apply-patch '<patch>'` -- Codex puts it on
+the shell's PATH -- deleted a file in scratch while `shell_patch` never looked at it. FX-G2: 11 of
+11 other forms were unseen too (`{ apply_patch`, `FOO=1 apply_patch`, `apply_patch.bat`,
+`'apply_patch'`, wrappers, `bash -c`, a double-quoted or npx-launched Codex flag). **Fix
+(`3e3b0c0`):** the single-quoted Codex form (literal text) is READ as a patch; every other
+spelling of a patch run is REFUSED, found by the guards' own shell parser rather than a regex; a
+mention (`echo`/`grep apply_patch`) is still not a run; with no parser available the name anywhere
+refuses. Residual: F199.
+
+**RE-DERIVED BY:** `tests/test_patch_paths.py` -- `test_codex_run_as_apply_patch_is_read_as_a_patch`,
+`test_every_other_spelling_of_a_patch_run_is_refused`, `test_TWIN_a_mention_is_not_a_patch_run`,
+`test_TWIN_no_shell_parser_fails_closed`.
+
+## F189 — a move to the Trash was not treated as a delete · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer D-1; MEASURED by FX-G2, 16 of 24 probes wrong).** `core.md` tells Linux and macOS
+agents to delete by moving to the Trash (the user's rule, kept), and the guards ALLOWED
+`gio trash '<X4_GAME>'`, `gio trash '<X4_GAME>/extensions'`, `gio trash '<X4_REFERENCE>/a.xml'`, a
+trashed save, `kioclient5 move <game> trash:/` and a Finder `delete` through `osascript`.
+**Fix (`47ad1f0`):** `trash_paths` feeds rm's operand list for `gio trash/remove/rm` and
+move-to-`trash:`, `trash`/`trash-put`/`gvfs-trash`/`gvfs-rm`/`rmtrash`, `kioclient*`
+remove/move-to-`trash:`, and `osascript -e` scripts that `delete` a POSIX file/folder/alias, so
+each takes rm's verdicts exactly (game and reference deny, saves and profile ask, other X4
+folders advise). The Windows Recycle Bin form was already right; regression probes added.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestG2MoveToTrashIsADelete`:
+`test_every_trash_form_judges_like_rm` and four TWINs).
+
+## F190 — non-ASCII whitespace split one config file into two configurations · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer A's fuzzer: 18 value diffs in 400 lines).** Python's `\s` / `str.isspace()` are
+Unicode and bash's `[:space:]` is ASCII in the C locale, so `X4_GAME<NBSP>=/g` configured the TOOLS
+and was refused by the GUARDS. **Fix (`ad4bd62`):** both loaders decide blank/comment on ASCII
+whitespace only and refuse (`shape`, so F178 reports it) any other line holding one of the 23
+characters `isspace()` adds beyond ASCII (verified by FX-G2 equal to `isspace()` minus ASCII over
+the BMP). 0 diffs after, seeds 1-3.
+
+**RE-DERIVED BY:** `tests/test_config_unicode_space.py` --
+`test_a_line_with_non_ascii_whitespace_is_refused_by_BOTH` (13 characters x 5 positions),
+`test_TWIN_ascii_whitespace_is_still_a_configuration`,
+`test_TWIN_a_comment_or_blank_line_is_not_reported`.
+
+## F191 — five parser bypasses of the hard blocks · **DEFECT (measured)** · PRE-ARC · SECURITY · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer E, E1-E5; each MEASURED red at the facts level and end to end through
+`protect-bash.sh` first).** Each let a command the hard blocks exist for -- `rm -rf <game>` -- run
+as ALLOW:
+
+- **E1** heredoc detection was per line, so a `<<WORD` on the second line of a multi-line quoted
+  string (`git commit -m "notes` / `use cat <<EOF here"`) opened a skip region that never closed.
+- **E2** `EOF)` ends a heredoc opened inside `$(` (bash warns, then RUNS the next line); the body
+  ran to the end of input.
+- **E3** a heredoc piped into a shell on a LATER line (`cat <<EOF |` ... `bash`,
+  `{ cat <<EOF ... } | bash`) was stripped as data.
+- **E4** `cmd` with no `/c` reads its program from stdin (`echo rd ... | cmd`, `cmd <<EOF`).
+- **E5** an ANSI-C `$'it\'s'` opened a quote that never closed in every scanner.
+
+**Fix (`ee040bc`):** one heredoc walk (`_heredoc_walk`) carrying the quote state across lines and
+reading several heredocs per line in order; `EOF)` terminates; a body in a command where a
+piped-into segment is a shell is executed text, and a line ending in `|` continues its pipeline;
+cmd stdin is translated (`cmd_heredoc_bodies`), an unreadable one asks; one shared quote walk
+(`_qwalk`) with an ANSI-C mode. 15 new mutants in `scripts/verify-hook-tests.py`; the fuzz
+control re-anchored (rc 0).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (classes `TestE1HeredocQuoteStateCrossesLines`,
+`TestE2TerminatorInsideASubstitution`, `TestE3AHeredocPipedIntoAShellOnALaterLine`,
+`TestE4CmdReadsItsProgramFromStdin`, `TestE5AnsiCQuoting`) and `scripts/verify-hook-tests.py`.
+
+## F192 — git work-tree spellings and five icacls switches reached no rule · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer E, E6 and E7).** (E6) `--work-tree X` / `--work-tree=X`, `GIT_WORK_TREE=`,
+`--git-dir` / `GIT_DIR` did not name the folder a git wipe acts on, and `-c
+clean.requireForce=false` did not make an unforced `git clean` a delete. (E7) the "lifting the
+reference/ protection asks" rule (F155) knew `/remove` and `/reset` only: `icacls /grant`,
+`/inheritance`, `/restore` (ancestor, no `/T` needed), `/setowner` and `/substitute` lift it too,
+and an x4refguard action passed through `xargs` or a variable was not seen. **Fix (`ee040bc`):**
+those spellings name/force the wipe; every ACL-modifying switch lifts (ask); an action the guard
+cannot read asks; switch values are not paths.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (classes `TestE6GitWorkTreeAndRequireForce`,
+`TestE7EveryAclLiftAsks`).
+
+## F193 — an agent could switch the guards off through a Claude Code settings file · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2; user decision)
+
+**Finding (MEASURED on Claude Code 2.1.290).** A project `.claude/settings.json` `env` block reaches
+every hook process, so an agent writing `"env": {"X4_GUARD": "off"}` there switched the guards off
+at the next launch -- the route F156 closed for `x4-paths.env`, open through another file.
+**USER DECISION 2026-10-05:** block `X4_GUARD` there. **Fix (`dbaaf7d`, one implementation,
+`settings_guard.py`):** Write/Edit/MultiEdit are judged on the RESULTING content; setting
+`X4_GUARD`/`X4_GUARD_CHECK` in any `env` is denied, a result that may spell it but cannot be
+parsed is denied with a reason, every other settings edit is allowed. Any SHELL write to
+`.claude/settings*.json` is denied with the file-edit tool as the remedy (its content cannot be
+seen); a read, delete or move away is allowed. Codex/OpenCode `apply_patch` and OpenCode
+write/edit are judged on the written text; `x4guard check` on a settings path without the text is
+denied. `session-canary.sh` names any project or user settings file that sets it. `abd4158`
+seeds the fuzzer for the new rule (4,280 mutants, 0 bypasses). Residual: F198.
+
+**RE-DERIVED BY:** `tests/test_settings_guard.py` (9 tests, 8 RED with the rule disabled:
+`test_write_that_sets_X4_GUARD_is_denied_and_twin_allowed`, `test_edit_is_judged_on_the_RESULTING_file`,
+`test_an_unreadable_result_that_could_spell_it_is_denied`,
+`test_TWIN_a_file_merely_named_settings_elsewhere_is_not_this_rule`,
+`test_a_shell_write_is_denied_and_a_read_is_allowed`,
+`test_codex_patch_adding_X4_GUARD_is_denied_and_twin_allowed`,
+`test_codex_patch_on_a_file_that_ALREADY_sets_it_is_denied`,
+`test_x4guard_check_needs_the_written_text_for_a_settings_file`,
+`test_the_canary_names_a_settings_file_that_sets_it`) and `.claude/hooks/test_hook_facts.py`
+(class `TestAShellWriteToAgentSettingsIsRefused`).
+
+## F194 — the config-write denies never reached the Codex conformance replay · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer E8).** `scripts/test-hooks.sh` unset `X4_DECIDE_DUMP` along with every other
+X4_* key in its path-config section, so that section's denies were never dumped and never
+replayed through the Codex chain. **Fix (`eba4ab2`):** the harness switch is kept; the joined R3-1
+probe became one probe per refusal, and the caller-directory leftover check runs last.
+
+**RE-DERIVED BY:** `scripts/test-hooks.sh` (its path-config section now in the dump the conformance
+replay reads).
+
+## F195 — the Windows Codex wrapper accepted an array-valued decision · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (MEASURED red first by FX-G2).** `codex-entry.ps1` checked `permissionDecision -cne 'deny'`;
+for an ARRAY `@('deny')` that comparison yields an empty, falsy array, so the PowerShell wrapper
+accepted output that `codex-entry.sh` rejects. **Fix (`eba4ab2`):** a non-string decision fails
+closed; 46 of 46 wrapper cases after.
+
+**RE-DERIVED BY:** `tests/test_codex_wrapper.py` (the array fault in its FAULTS table).
+
+## F196 — `verify-hook-tests` credited one catch-all test to every predicate · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
+
+**Finding (reviewer E10).** The silent? column credited the catch-all `test_TWIN_a_read_is_not_a_write`
+as a must-not-fire test of EVERY predicate, so a predicate with no test of its own looked covered.
+**Fix (`dbaaf7d`):** a failing test is credited only when its source (or its class's FACT/KEYS)
+names the predicate. Over all 31 predicates every one keeps at least one credited must-not-fire
+test, so no real gap appeared; the lowest is `verb_unresolved`, with 3 of its 8 credited. (The
+commit message reads "5 -> 3"; 3 of 8 is the corrected figure, per the orchestrator, not
+re-measured in this lane.)
+
+**RE-DERIVED BY:** `scripts/verify-hook-tests.py` (its `test_sources` / `names_predicate` crediting).
+
+## F197 — `verify-hook-tests` credited a mutant to a same-named test in another class · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (FX-G3 patch)
+
+**Finding (MEASURED by FX-G3).** 3 of 618 test method names exist in two classes
+(`test_suffix_strip`, `test_pattern_replace`, `test_array_index`); a FAIL in the OTHER class's
+same-named test was credited as the mutant caught (old parse True, new False). **Fix
+(`a2c6590`):** failures parse as `Class.method` (Python 3.10 and 3.11+ formats); targets qualify
+through an AST index; an ambiguous or unknown target refuses rc 2. Applied after the FX-G2 merge:
+all 143 mutant targets resolve to exactly one test.
+
+**RE-DERIVED BY:** `scripts/verify-hook-tests.py` (its `test_index` resolution, which refuses an
+ambiguous target).
+
+## F198 — a settings file written by an opaque interpreter or a cwd-relative write is not judged · **SCOPE (open, accepted)** · confidence 80% · ⏳ OPEN
+
+**Residual of F193 (reported by FX-G2, not re-measured in this lane).** The shell rule recognises
+write primitives aimed at `.claude/settings*.json`; a write from inside an opaque interpreter
+(`python -c`, a script file) or a RELATIVE write whose cwd is unknown names no such path to it.
+Accepted: the session canary still names, at the next start, any settings file that sets
+`X4_GUARD`, so the switch-off is not silent.
+
+## F199 — a patch runner whose name is built from a variable is not a patch run · **SCOPE (open, accepted)** · confidence 80% · ⏳ OPEN
+
+**Residual of F188 (reported by FX-G2, not re-measured in this lane).** The refusal finds patch
+runs by command name through the shell parser; a name assembled from a variable (`P=apply_patch;
+$P ...`) is not recognised. Accepted residual.
+
+## F200 — an escaped backtick inside double quotes is read as a substitution · **SCOPE (open, accepted)** · PRE-ARC · confidence 80% · ⏳ OPEN
+
+**Residual (reported by FX-G2, pre-existing, not re-measured in this lane).** Inside double quotes
+`\`` is a literal backtick to bash, but the scanner reads it as opening a command substitution.
+The effect is an ADVISORY false positive only: text is judged as a command, never a command
+missed. Accepted.
