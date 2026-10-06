@@ -82,6 +82,15 @@ fi
 _X4_UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
 _X4_NMC="${_X4_UC}0123456789_"
 _X4_IDC="${_X4_NMC}abcdefghijklmnopqrstuvwxyz"
+# FX-G2 item 8: the six ASCII whitespace characters, and every character Python's str.isspace()
+# adds beyond them, as UTF-8. A config line holding one of the latter is refused (`shape`) here
+# and in _paths.parse_env_report alike: `X4_GAME<NBSP>=/g` WAS a configuration to Python and a
+# refused line to bash (whose [:space:] is ASCII in the C locale and locale-dependent otherwise).
+_X4_AWS=$' \t\v\f\r'
+_X4_ODDSP=($'\x1c' $'\x1d' $'\x1e' $'\x1f' $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80'
+  $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85'
+  $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8'
+  $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80')
 
 _x4_cfg_lookup() {   # NAME -> _x4_lv: the file's latest value for NAME, else the shell's
   local j=${#_X4_FK[@]}
@@ -203,8 +212,11 @@ _x4_cfg_read() {
     n=$((n + 1))
     line="${line%$'\r'}"
     [ "$n" = 1 ] && line="${line#$'\357\273\277'}"
-    l="${line#"${line%%[![:space:]]*}"}"
+    l="${line#"${line%%[!$_X4_AWS]*}"}"
     case "$l" in ''|\#*) continue ;; esac
+    _x4_odd=0
+    for _x4_sp in "${_X4_ODDSP[@]}"; do case "$line" in *"$_x4_sp"*) _x4_odd=1; break ;; esac; done
+    if [ "$_x4_odd" = 1 ]; then _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue; fi
     case "$l" in export[[:space:]]*) l="${l#export}"; l="${l#"${l%%[![:space:]]*}"}" ;; esac
     case "$l" in *=*) ;; *) _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue ;; esac
     k="${l%%=*}"; k="${k%"${k##*[![:space:]]}"}"
@@ -229,7 +241,7 @@ _x4_cfg_read() {
     export "$k=$_x4_v"
   done < "$1"
   _x4_cfg_ignored="${_x4_cfg_ignored# }"
-  unset _X4_FK _X4_FV _x4_v _x4_bad _x4_lv _x4_dt _x4_dn
+  unset _X4_FK _X4_FV _x4_v _x4_bad _x4_lv _x4_dt _x4_dn _x4_odd _x4_sp
   return 0
 }
 

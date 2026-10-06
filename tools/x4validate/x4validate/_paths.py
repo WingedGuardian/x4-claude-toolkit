@@ -77,6 +77,11 @@ _LOCAL_FALLBACK: dict[str, str] = {}
 #: so a line naming another key is REPORTED (`key`), not silently skipped.
 _LINE = re.compile(r"""^\s*(?:export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<val>.*?)\s*$""")
 _OUR_KEY = re.compile(r"^(?:X4_[A-Z0-9_]+|XRCATTOOL)$")
+#: Whitespace to the shell: the six ASCII characters bash's [:space:] holds in the C locale.
+_ASCII_WS = " \t\n\r\x0b\x0c"
+#: Every character str.isspace() calls whitespace BEYOND those six. A config line holding one is
+#: refused (`shape`) by both loaders, never read two ways (FX-G2 item 8; _X4_ODDSP in _x4-env.sh).
+_ODD_SPACE = re.compile("[\x1c-\x1f\x85\xa0  -     　]")
 #: The guard switches. Read from the LAUNCH environment only (v4.0 release review R1-F1): a
 #: config line naming one is ignored and reported, in both loaders.
 GUARD_KEYS = frozenset({"X4_GUARD", "X4_GUARD_CHECK"})
@@ -219,7 +224,13 @@ def parse_env_report(path: Path) -> tuple[dict[str, str], list[tuple[int, str]]]
 
     for n, raw in enumerate(text.split("\n"), 1):
         raw = raw[:-1] if raw.endswith("\r") else raw
-        if not raw.strip() or raw.lstrip().startswith("#"):
+        # ASCII whitespace only, here and below (FX-G2 item 8): `\s` and str.isspace() are
+        # UNICODE, bash's [:space:] is not, and `X4_GAME<NBSP>=/g` was a configuration here and
+        # a refused line to the guards -- one file, two trees. MEASURED by the delta review.
+        if not raw.strip(_ASCII_WS) or raw.lstrip(_ASCII_WS).startswith("#"):
+            continue
+        if _ODD_SPACE.search(raw):
+            ignored.append((n, "shape"))
             continue
         m = _LINE.match(raw)
         if not m:
