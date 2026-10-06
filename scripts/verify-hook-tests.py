@@ -362,7 +362,7 @@ MUTANTS = [
     ("ANY parameter expansion is unresolved, not just the two _VAR names",
      "    return bool(_EXPANSION.search(tok) or _SUBST.search(tok))",
      "    return bool(_VAR.search(tok) or _SUBST.search(tok))",
-     "test_suffix_strip"),
+     "TestAnUnresolvedExpansionIsNotALiteralPath.test_suffix_strip"),
     ("coproc is a reserved word",
      '"coproc", "[[", "]]"}', '"[[", "]]"}',
      "test_coproc_does_not_hide_a_delete"),
@@ -745,9 +745,53 @@ def run(work: Path):
     p = subprocess.run([sys.executable, "test_hook_facts.py"], cwd=work,
                        capture_output=True, text=True, errors="replace", env=env)
     out = p.stdout + p.stderr
-    failed = set(re.findall(r"(?:FAIL|ERROR): (\w+) ", out))
+    failed = failed_tests(out)
     ran = re.search(r"Ran (\d+) tests", out)
     return p.returncode, failed, int(ran.group(1)) if ran else -1
+
+
+# A failed test is "Class.method", never the bare method (FX-G3, v4.0.0 delta review). The bare
+# name collides: test_hook_facts.py defines test_suffix_strip, test_pattern_replace and
+# test_array_index in TWO classes each (MEASURED: 3 of 618 test names), so a mutant whose target
+# is "test_suffix_strip" was credited as CAUGHT when the OTHER class's test went red.
+_FAILED = re.compile(r"^(?:FAIL|ERROR): (\w+) \(([\w.]+)\)", re.M)
+
+
+def failed_tests(out: str) -> set:
+    """Qualified "Class.method" for every FAIL/ERROR line. Python <= 3.10 prints
+    `test_x (module.Class)`; 3.11+ prints `test_x (module.Class.test_x)`."""
+    found = set()
+    for meth, dotted in _FAILED.findall(out):
+        parts = dotted.split(".")
+        cls = parts[-2] if parts[-1] == meth and len(parts) > 1 else parts[-1]
+        found.add(f"{cls}.{meth}")
+    return found
+
+
+def test_index(source: str) -> dict:
+    """{method name: [classes defining it]} for every test method in test_hook_facts.py."""
+    import ast
+    idx: dict = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ClassDef):
+            for m in node.body:
+                if isinstance(m, ast.FunctionDef) and m.name.startswith("test"):
+                    idx.setdefault(m.name, []).append(node.name)
+    return idx
+
+
+def qualify(tgt: str, idx: dict):
+    """(qualified target, None) or (None, why). A bare method name is accepted only when exactly
+    ONE class defines it; an ambiguous or unknown target refuses rather than guessing."""
+    if "." in tgt:
+        cls, meth = tgt.split(".", 1)
+        return (tgt, None) if cls in idx.get(meth, []) else (None, f"{tgt}: no such test")
+    owners = idx.get(tgt, [])
+    if len(owners) == 1:
+        return f"{owners[0]}.{tgt}", None
+    if not owners:
+        return None, f"{tgt}: no such test"
+    return None, f"{tgt}: AMBIGUOUS, defined in {', '.join(owners)} -- write Class.{tgt}"
 
 
 def main() -> int:
@@ -785,12 +829,18 @@ def main() -> int:
                   "be a statement about nothing.", file=sys.stderr)
             return 2
         source = (HOOKS / "test_hook_facts.py").read_text(encoding="utf-8")
-        missing = [t for _l, _o, _n, t in MUTANTS if ("def " + t + "(") not in source]
+        idx = test_index(source)
+        qualified, missing = {}, []
+        for _l, _o, _n, t in MUTANTS:
+            q, why = qualify(t, idx)
+            if q is None:
+                missing.append(why)
+            qualified[t] = q
         if missing:
-            print("REFUSING: %d mutant target(s) name no test in test_hook_facts.py: %s"
-                  % (len(missing), ", ".join(sorted(set(missing)))), file=sys.stderr)
-            print("  (a target must be a test METHOD name -- unittest prints no class "
-                  "name in a FAIL: line)", file=sys.stderr)
+            print("REFUSING: %d mutant target(s) do not name exactly one test in test_hook_facts.py: %s"
+                  % (len(set(missing)), "; ".join(sorted(set(missing)))), file=sys.stderr)
+            print("  (a target is a test METHOD name, or Class.method when the name is defined "
+                  "in more than one class)", file=sys.stderr)
             return 2
 
         bad = 0
@@ -807,7 +857,7 @@ def main() -> int:
             if ran < 20:
                 print(f"{label:<42} {'BROKE':<12} *** broke the suite, proves nothing ***")
                 bad += 1
-            elif tgt in failed:
+            elif qualified[tgt] in failed:
                 extra = len(failed) - 1
                 print(f"{label:<42} {'RED':<12} correct"
                       + (f" (+{extra} other)" if extra else " (only this test)"))
