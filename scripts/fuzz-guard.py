@@ -983,6 +983,13 @@ def seeds(roots):
         ("process substitution as a script", "bash <(echo " + d + " -rf " + QU + g + QU + ")"),
         ("verb from a substitution variable", "x=$(printf " + d + "); $x -rf " + QU + ref + QU),
         ("takeown lifts the reference deny", "takeown /f " + QU + ref + QU + " /r"),
+        # FX-G6 (v4.0.0 delta review, reviewer K): one seed per shape the lane fixed.
+        ("empty branch of an unassigned :+", d + " -rf " + QU + "${G6_NOPE:+zz}" + ref + QU),
+        ("lone dash before a process substitution", "bash - <(echo " + d + " -rf " + QU + g + QU + ")"),
+        ("+n cancels -n", "bash -n +n <(echo " + d + " -rf " + QU + g + QU + ")"),
+        ("brace span with a blank in a prefix", "A=${G6_X:-echo a} " + d + " -rf " + QU + g + QU),
+        ("separator inside a prefix substitution", "A=$(echo a; echo b) " + d + " -rf " + QU + g + QU),
+        ("wrapper value with a blank", "env -C $(echo /tmp ) " + d + " -rf " + QU + g + QU),
         # NOT seeded: `cmd //c "cd /d <game> && rd /s /q extensions"`. Its dangerous part
         # is cmd.exe text inside one quoted word, and every mutator here rewrites BASH
         # syntax -- `timeout -s KILL 5 rd` or `$'rd'` inside that word is a different cmd
