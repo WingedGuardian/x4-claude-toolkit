@@ -4922,14 +4922,17 @@ class TestH7H8TextPipedIntoAShell(unittest.TestCase):
             c = v + " " + DEL_GAME + " | bash"
             with self.subTest(c=c):
                 self.assertTrue(F(c)["rm_hits_game"], c)
-        self.assertTrue(F("bash <(curl -s http://x)")["carrier_untranslated"])
         self.assertTrue(F("printf '%5s' x | bash")["carrier_untranslated"])
 
     # --- one falsification twin per clause ---
     def test_TWIN_a_harmless_program_a_non_shell_or_a_script_argument_is_not(self):
         for c in ("echo ls | bash", "diff <(echo " + DEL_GAME + ") <(echo b)",
                   "bash ./x.sh <(echo " + DEL_GAME + ")", "echo " + DEL_GAME + " | cat",
-                  "bash <(echo ls)"):
+                  "bash <(echo ls)",
+                  # USER DECISION 2026-10-06: a non-echo producer is allowed as before (an
+                  # opaque script), and `bash -n` executes nothing -- never ask or deny.
+                  "bash <(curl -s http://x)", 'source <(sed -n "/^f()/,/^}/p" install.sh)',
+                  "bash -n <(echo " + DEL_GAME + ")", "bash -n <(sed -n 1,9p ci.yml)"):
             with self.subTest(c=c):
                 f = F(c)
                 self.assertFalse(f["rm_hits_game"] or f["carrier_untranslated"], c)

@@ -114,6 +114,21 @@ def test_X4_GUARD_ANYWHERE_in_the_file_is_denied_not_only_in_env(sandbox):
 
 
 @needs_bash
+def test_a_PERMISSIONS_rule_mentioning_X4_GUARD_is_allowed_the_same_text_elsewhere_is_not(sandbox):
+    """USER DECISION 2026-10-06: the top-level `permissions` block is exempt -- a rule string that
+    mentions X4_GUARD sets nothing. The same text in `env` or a hooks command is still denied."""
+    _tmp, _tk, env, s = sandbox
+    text = "Bash(export X4_GUARD=off)"
+    for doc, want in (({"permissions": {"deny": [text], "allow": [], "ask": [text]}}, "allow"),
+                      ({"env": {"NOTE": text}}, "deny"),
+                      ({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": text}]}]}}, "deny"),
+                      ({"permissions": {"deny": [text]}, "env": {"X4_GUARD": "off"}}, "deny")):
+        d, _ = _hook(env, "protect-files.sh", {"tool_name": "Write", "tool_input": {
+            "file_path": str(s), "content": json.dumps(doc)}})
+        assert d == want, (doc, d)
+
+
+@needs_bash
 def test_an_edit_whose_old_string_does_not_apply_is_judged_on_its_new_text(sandbox):
     """FX-G4 / reviewer H-M1: an Edit whose old_string is not in the file as read here was ALLOWED
     whatever it wrote -- the file the tool sees may differ. Twin: the same miss without the key."""

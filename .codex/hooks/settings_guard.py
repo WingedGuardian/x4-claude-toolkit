@@ -74,6 +74,8 @@ def guard_keys(text: str):
                     found += [x for x in v if str(x).upper() in KEYS]
                 elif _MENTION.search(str(k)):
                     found.append(_MENTION.search(str(k)).group(0))
+                if k == "permissions" and o is doc:
+                    continue    # rule STRINGS (`Bash(export X4_GUARD=off)`) set nothing (USER, 2026-10-06)
                 stack.append(v)
         elif isinstance(o, list):
             stack.extend(o)

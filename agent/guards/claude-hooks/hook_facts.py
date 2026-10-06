@@ -3695,9 +3695,11 @@ def _procsub_program(seg: str) -> list:
     """FX-G4 / reviewer H8, MEASURED: `bash <(echo rm -rf "<game>")`, `source <(...)` and
     `. <(...)` were ALLOWED. A process substitution that is a shell's SCRIPT operand (its
     first non-option word) is executed text: what an echo/printf inside it prints is the
-    program (as for `echo ... | bash`, H7); any other producer is unreadable -> the
-    inability path. A `<(...)` that is an argument to a script, or to any other verb
-    (`diff <(a) <(b)`), is not a program."""
+    program (as for `echo ... | bash`, H7). Any other producer (`source <(sed -n ... f.sh)`,
+    `bash <(curl ...)`) is ALLOWED unjudged, exactly as running a script file the guards
+    cannot see into (USER DECISION 2026-10-06; an accepted BLIND-SPOTS residual), and
+    `bash -n` runs nothing at all. A `<(...)` that is an argument to a script, or to any
+    other verb (`diff <(a) <(b)`), is not a program."""
     toks = tokens(seg)
     if not toks or _verb_name(verb(seg)) not in _SHELL_SINKS:
         return []
@@ -3708,6 +3710,8 @@ def _procsub_program(seg: str) -> list:
     first = next(((t, q) for t, q in toks[k + 1:] if q or not t.startswith("-")), None)
     if not first or first[1] or not first[0].startswith("<("):
         return []
+    if any(not q and re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t, q in toks[k + 1:]):
+        return []                      # `bash -n`: a syntax check, nothing is executed
     mask = _quote_mask(seg)
     at = next((i for i in range(len(seg) - 1)
                if seg[i:i + 2] == "<(" and not mask[i]), -1)
@@ -3715,14 +3719,11 @@ def _procsub_program(seg: str) -> list:
     # No `)` in the segment: the segmenter took it as a case-arm/subshell close (`x) bash
     # <(echo ...) ;;`). What is left of the segment is the inner text (fuzz-guard, FX-G4).
     if at < 0:
-        _UNTRANSLATED.append("a process substitution run as a shell script, unreadable")
         return []
     inner = seg[at + 2:close] if close >= 0 else seg[at + 2:]
     segs = segments(inner)
     if segs and _verb_name(verb(segs[-1])) in ("echo", "printf"):
         return _echo_printf_program(segs[-1])
-    _UNTRANSLATED.append("a process substitution run as a shell script, fed by something "
-                         "the guard cannot read")
     return []
 
 
