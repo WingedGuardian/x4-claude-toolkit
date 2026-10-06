@@ -964,7 +964,10 @@ def main() -> int:
                 _rc, f, r = run(work)
                 if val == "True":
                     # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
-                    f = {t for t in f if names_predicate(srcs.get(t, ""), k)}
+                    # `f` holds "Class.method" (FX-G3) while srcs is keyed by METHOD: looking up
+                    # the qualified name found no source, so EVERY predicate read NONE (FX-G4,
+                    # MEASURED: 32 of 32 -- present since the two patches met at e39f675).
+                    f = {t for t in f if names_predicate(srcs.get(t.rsplit(".", 1)[-1], ""), k)}
                 row.append("BROKE" if r < 20 else ("probed" if f else "*** NONE ***"))
             if "*** NONE ***" in row or "BROKE" in row:
                 gaps += 1

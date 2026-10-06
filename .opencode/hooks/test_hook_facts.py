@@ -4969,7 +4969,9 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
                   # the corpus replay's false advisory: a segment cut inside an assignment's
                   # own substitution reads `$P` as its verb -- not a command position
                   'P=$(ls -d "' + GAME + '/extensions/x" 2>/dev/null); f=$(find "$P" -name ' + Q + 'a.lua' + Q
-                  + ' -type f 2>/dev/null | head -1); echo "$f"'):
+                  + ' -type f 2>/dev/null | head -1); echo "$f"',
+                  # ...with an ABSOLUTE operand in that fragment (the session cwd plays no part)
+                  'P=$(ls -d /c/w/x); f=$(find "$P" "' + GAME + '/extensions" -name a.lua)'):
             with self.subTest(c=c):
                 f = FC(c, GAME)                 # run FROM the game root, as the replay's were
                 self.assertFalse(f["verb_unresolved"] or f["rm_in_x4_dir"], c)
