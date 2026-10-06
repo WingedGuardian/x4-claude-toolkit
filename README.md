@@ -435,7 +435,7 @@ To run x4validate's test suite yourself, from the toolkit folder: in Git Bash, L
 `cd tools/x4validate && uv run pytest -q`; in Windows PowerShell (5.1 rejects `&&`)
 `cd tools/x4validate; uv run pytest -q`. Passing means **0 failed and 0 errors**; skips are
 expected. What was measured (2026-10-05, on Windows: a fresh `--agent all` install by each
-installer, separate method, then the full installed suite): the `install.ps1` install passed with 4,018 passed, 377 skipped, 0 failed;
+installer, separate method, `--no-env` / `-NoEnv`, then the full installed suite): the `install.ps1` install passed with 4,018 passed, 377 skipped, 0 failed;
 the `install.sh` install ended 4,017 passed, 366 skipped, 6 failed, from three causes that were
 then fixed and re-run individually (no second full run; BLIND-SPOTS F161). Installs with fewer
 agents were not measured. Each skip names its reason: an installed toolkit does not carry the repository-only
