@@ -2365,10 +2365,52 @@ def move_sources(seg: str) -> list[str]:
     return ops[:-1] if len(ops) > 1 else []
 
 
+#: MOVE-TO-TRASH commands, which are DELETES of their operands (FX-G2 item 7, v4.0.0 delta
+#: review, reviewer D-1). The user's rule -- deletions go to the Recycle Bin / Trash -- stays;
+#: core.md tells Linux/macOS agents to delete this way, and the guards ALLOWED `gio trash
+#: '<X4_GAME>'`, `gio trash '<X4_REFERENCE>/a.xml'`, `kioclient5 move <game> trash:/` and a
+#: Finder `delete` through osascript. A trashed install is as gone for the game as a deleted one,
+#: so each takes rm's verdicts exactly: game/extensions deny, reference deny, saves/profile ask.
+_TRASH_VERBS = {"trash", "trash-put", "gvfs-trash", "gvfs-rm", "rmtrash"}
+_GIO_DELETE = {"trash", "remove", "rm"}
+_KIO_DELETE = {"remove", "rm", "del"}
+_KIOCLIENT = re.compile(r"^kioclient\d*$")
+_FILE_URL = re.compile(r"^file://(?:localhost)?(?:/(?=[A-Za-z]:))?", re.IGNORECASE)
+#: A Finder object an AppleScript `delete` names by path: `POSIX file "/x"`, `folder "x"`, ...
+_AS_PATH = re.compile(r"(?:POSIX\s+file|POSIX\s+path|file|folder|alias|item|disk\s+item)\s+"
+                      r"\"([^\"]+)\"", re.IGNORECASE)
+
+
+def trash_paths(seg: str) -> list[str]:
+    """Operands a move-to-trash command takes out of their folder (see _TRASH_VERBS)."""
+    v = verb(seg)
+    if v in _TRASH_VERBS:
+        return [_FILE_URL.sub("", o) for o in _operands(seg)]
+    ops = _operands(seg)
+    if v == "gio" and ops:
+        if ops[0] in _GIO_DELETE:
+            return [_FILE_URL.sub("", o) for o in ops[1:]]
+        if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
+            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+        return []
+    if _KIOCLIENT.match(v or "") and ops:
+        if ops[0] in _KIO_DELETE:
+            return [_FILE_URL.sub("", o) for o in ops[1:]]
+        if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
+            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+        return []
+    if v == "osascript":
+        toks = tokens_of(seg)
+        script = " ".join(toks[i + 1] for i, t in enumerate(toks[:-1]) if t == "-e")
+        if re.search(r"\bdelete\b", script, re.IGNORECASE):
+            return _AS_PATH.findall(script)
+    return []
+
+
 def rm_paths(seg: str) -> list[str]:
     if verb(seg) in DELETE_VERBS:
         return _operands(seg)
-    return find_deletes(seg)
+    return trash_paths(seg) or find_deletes(seg)
 
 
 # ------------------------------------------------------------------ searches

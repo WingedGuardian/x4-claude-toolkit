@@ -4492,6 +4492,54 @@ class TestG2GitLongOptionAbbreviations(unittest.TestCase):
         self.assertTrue(H._git_long("--a", "--all"))
 
 
+class TestG2MoveToTrashIsADelete(unittest.TestCase):
+    """FX-G2 item 7 (v4.0.0 delta review, reviewer D-1): core.md tells Linux/macOS agents to
+    delete through the Trash, and `gio trash '<X4_GAME>'`, `kioclient5 move <game> trash:/` and a
+    Finder `delete` through osascript were ALLOWED. A move to the trash is a delete of its
+    operands, with rm's verdicts."""
+
+    GAME_FORMS = ("gio trash '{p}'", "gio trash -f '{p}'", "gio remove '{p}'",
+                  "gio trash 'file://{p}'", "gio move '{p}' trash:///", "trash-put '{p}'",
+                  "trash '{p}'", "gvfs-trash '{p}'", "kioclient5 move '{p}' trash:/",
+                  "kioclient move '{p}' trash:/",
+                  "osascript -e 'tell application " + DQ + "Finder" + DQ + " to delete POSIX file "
+                  + DQ + "{p}" + DQ + "'")
+
+    def test_every_trash_form_judges_like_rm(self):
+        keys = ("rm_hits_game", "rm_targets_reference", "rm_saves", "rm_in_profile", "rm_in_x4_dir")
+        for form in self.GAME_FORMS:
+            for p in (GAME, GAME + "/extensions", REF + "/a.xml", PROF + "/save/s.xml.gz",
+                      GAME + "/extensions/mymod"):
+                with self.subTest(form=form, p=p):
+                    a, b = F(form.format(p=p)), F(D + " -rf '" + p + "'")
+                    self.assertEqual({k: a[k] for k in keys}, {k: b[k] for k in keys})
+                    self.assertTrue(any(a[k] for k in keys))
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_non_deleting_subcommand_is_not_a_delete(self):
+        """Clause: the subcommand trashes/removes (gio, kioclient)."""
+        for c in ("gio list '" + GAME + "'", "gio info '" + REF + "/a.xml'",
+                  "gio copy '" + REF + "/a.xml' /c/x/", "kioclient5 copy '" + REF + "/a.xml' /c/x/",
+                  "kioclient5 cat '" + REF + "/a.xml'", "gio trash --empty"):
+            with self.subTest(c=c):
+                f = F(c)
+                self.assertFalse(f["rm_targets_reference"] or f["rm_hits_game"] or f["rm_in_x4_dir"], c)
+
+    def test_TWIN_a_move_NOT_into_the_trash_is_not_this_rule(self):
+        """Clause: the destination is `trash:`."""
+        self.assertEqual(H.trash_paths("gio move '" + GAME + "' /c/elsewhere"), [])
+        self.assertEqual(H.trash_paths("kioclient5 move '" + GAME + "' /c/elsewhere"), [])
+
+    def test_TWIN_osascript_without_delete_names_nothing(self):
+        """Clause: the AppleScript says `delete`."""
+        self.assertEqual(H.trash_paths("osascript -e 'tell application " + DQ + "Finder" + DQ
+                                       + " to open POSIX file " + DQ + GAME + DQ + "'"), [])
+
+    def test_TWIN_a_trash_outside_every_root_is_silent(self):
+        f = F("gio trash /c/elsewhere/x")
+        self.assertFalse(f["rm_in_x4_dir"] or f["rm_hits_game"] or f["rm_targets_reference"])
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.
