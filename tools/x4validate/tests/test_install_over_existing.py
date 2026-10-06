@@ -221,6 +221,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     for a in it:
         if a == "--game":
             common["game"] = next(it)
+        elif a == "--reference":
+            common["reference"] = next(it)
         elif a == "--agent":
             common["agent"] = next(it)
         elif a == "--dry-run":
@@ -3575,3 +3577,83 @@ def test_FXB2_6_setup_reads_the_config_with_the_SAME_grammar(tmp_path, loader, l
         assert "X4_GAME is set in x4-paths.env" in r.stdout, r.stdout[-2000:]
     else:
         assert "Set X4_GAME in x4-paths.env" in r.stdout, r.stdout[-2000:]
+
+
+# ---------------- FX-B3: --unpack gets THIS run's reference / config / game; X4_GAME inherited
+
+def _unpack_seams(tmp_path):
+    """A fake xrcat and a stub x4refguard: the real unpack path, no game, no ACL."""
+    (tmp_path / "game" / "01.cat").write_text("", encoding="utf-8")
+    fake = tmp_path / "fakexrcat"
+    fake.write_text('#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = -out ] && o="$2"; shift; done\n'
+                    'mkdir -p "$o/libraries"; echo x > "$o/libraries/f.xml"\n',
+                    encoding="utf-8", newline="\n")
+    fake.chmod(0o755)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('{\"state\": \"absent\"}')\nsys.exit(0)\n", encoding="utf-8")
+    return {"X4_XRCAT": fake.as_posix(), "X4_UNPACK_FLOOR": "1", "X4_REFGUARD_SCRIPT": stub.as_posix()}
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_uses_the_reference_THIS_run_configured(installer, tmp_path):
+    """Reviewer F M1: `--reference R2 --unpack` in a shell exporting a different X4_REFERENCE.
+    The installers passed --toolkit but not --reference, so the unpack saw the inherited
+    value disagree with the config R2 and REFUSED: install INCOMPLETE."""
+    dest = _fresh(tmp_path)
+    r2, other = tmp_path / "r2", tmp_path / "inherited-ref"
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--reference", r2.as_posix(),
+                 "--unpack", inherit={"X4_REFERENCE": other.as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-2500:]
+    assert "INCOMPLETE" not in out and "REFUSED" not in out, out[-2500:]
+    assert (r2 / "libraries" / "f.xml").is_file() and not other.exists(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_reads_THIS_run_s_game_not_an_inherited_X4_GAME(installer, tmp_path):
+    """--game G with an inherited X4_GAME naming another folder: the unpack's loader lets the
+    environment win, so it read the inherited game (here: absent -> 'game dir not found')."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--unpack",
+                 inherit={"X4_GAME": (tmp_path / "not-this-game").as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "INCOMPLETE" not in out, out[-2500:]
+    assert (dest / "reference" / "libraries" / "f.xml").is_file(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_unpack_reads_THIS_run_s_config_not_an_inherited_X4_CONFIG(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    elsewhere = tmp_path / "elsewhere.env"
+    elsewhere.write_text('X4_REFERENCE="%s"\n' % (tmp_path / "theirs").as_posix(), encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--unpack",
+                 inherit={"X4_CONFIG": elsewhere.as_posix(), **_unpack_seams(tmp_path)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "INCOMPLETE" not in out, out[-2500:]
+    assert (dest / "reference" / "libraries" / "f.xml").is_file(), out[-2500:]
+    assert not (tmp_path / "theirs").exists(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_an_INHERITED_X4_GAME_is_not_a_named_in_game_destination(installer, tmp_path):
+    """Reviewer F M6: an inherited X4_GAME counted as a NAMED destination, so an in-game
+    install under --yes wrote into whatever game root the shell carried (a --method global
+    install puts X4_GAME in every agent session). Refused, naming the variable; nothing written."""
+    _fresh(tmp_path)
+    game = tmp_path / "game"
+    r = _install(installer, tmp_path, game, "--dry-run", method="in-game", omit=("game",),
+                 over_existing=False, inherit={"X4_GAME": game.as_posix()})
+    out = r.stdout + r.stderr
+    assert r.returncode == 2, out[-2000:]
+    assert "INHERITED" in out and "X4_GAME" in out, out[-2000:]
+    assert not (game / "scripts").exists() and not (game / ".claude").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB3_TWIN_an_explicit_game_with_an_inherited_X4_GAME_proceeds(installer, tmp_path):
+    _fresh(tmp_path)
+    game = tmp_path / "game"
+    r = _install(installer, tmp_path, game, "--dry-run", method="in-game", over_existing=False,
+                 inherit={"X4_GAME": (tmp_path / "another-game").as_posix()})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "REFUSING" not in out, out[-2000:]
