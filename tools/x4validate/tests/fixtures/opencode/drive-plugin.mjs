@@ -19,8 +19,12 @@ if (exports.length !== 1 || typeof mod[exports[0]] !== "function") {
   process.stdout.write(JSON.stringify(result) + "\n")
   process.exit(0)
 }
-const hooks = await mod[exports[0]](c.ctx)
+// c.instances (default 1): how many plugin INSTANCES to create from the one module, as OpenCode does
+// for several projects in one process; a step's "instance" (default 0) picks the one it drives.
+const instances = []
+for (let i = 0; i < (c.instances ?? 1); i++) instances.push(await mod[exports[0]](c.ctx))
 for (const step of c.steps) {
+  const hooks = instances[step.instance ?? 0]
   const t0 = Date.now()
   const output = step.output ?? {}
   let threw = false

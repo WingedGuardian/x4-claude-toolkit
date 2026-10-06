@@ -40,8 +40,22 @@ def oc(tmp_path):
     for sub in ("hooks", "plugins"):
         shutil.copytree(REPO / ".opencode" / sub, tk / ".opencode" / sub,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    env = dict(env, X4_PYTHON=sys.executable, X4_OPENCODE_SHELL="bash")
+    # The shell OpenCode runs is a bash that RESOLVES (FX-G4 / G-M2: the plugin refuses one that does
+    # not); fake shell programs on PATH stand in for real ones -- only their names and existence count.
+    fake = tmp_path / "fakeshells"
+    fake.mkdir()
+    for n in ("bash", "pwsh", "powershell", "zsh", "sh", "dash", "cmd"):
+        (fake / (n + (".exe" if WIN else ""))).write_bytes(b"")
+    env = {k: v for k, v in env.items() if k != "X4_OPENCODE_SHELL"}
+    env = dict(env, X4_PYTHON=sys.executable, SHELL=str(fake / ("bash.exe" if WIN else "bash")),
+               PATH=env.get("PATH", "") + os.pathsep + str(fake))   # LAST: real programs win
     return tk, env
+
+
+def _fake(env, name):
+    """The absolute path of fake shell `name` from the oc fixture."""
+    d = env["PATH"].split(os.pathsep)[-1]
+    return os.path.join(d, name + (".exe" if WIN else ""))
 
 
 def drive(tk, env, steps, timeout=180):
@@ -120,10 +134,12 @@ def test_a_missing_adapter_THROWS_inert(oc):
 
 
 def test_an_unknown_shell_reaches_the_adapter_and_THROWS_inert(oc):
+    """FX-G4 / G-I1: the refusal names the fix -- OpenCode's own `shell` -- not X4_OPENCODE_SHELL."""
     tk, env = oc
-    r = drive(tk, dict(env, X4_OPENCODE_SHELL="cmd"), [before("bash", {"command": "echo hi"})])
+    r = drive(tk, dict(env, SHELL=_fake(env, "cmd")), [before("bash", {"command": "echo hi"})])
     s = r["steps"][0]
     assert s["threw"] and "INERT" in s["message"], s
+    assert "OpenCode's own `shell`" in s["message"] and "(set X4_OPENCODE_SHELL)" not in s["message"], s
 
 
 STUBS = {
@@ -258,29 +274,28 @@ DEFAULT = "powershell" if WIN else "bash"
 
 
 @pytest.mark.parametrize("shell, grammar", [
-    ("/usr/bin/pwsh", "powershell"),            # RED off Windows: was "bash"
-    ("pwsh.exe" if WIN else "pwsh", "powershell"),
-    ("/bin/zsh", "bash"),
-    ("/bin/sh", "bash"),
-    ("sh.exe" if WIN else "dash", "bash"),      # RED on Windows: sh.exe was "powershell"
+    ("pwsh", "powershell"),                     # RED off Windows before FX-G3: was "bash"
+    ("zsh", "bash"),
+    ("sh", "bash"),                             # RED on Windows before FX-G3: sh.exe was "powershell"
+    ("dash", "bash"),
     ("bash", "bash"),
 ])
-def test_SHELL_decides_the_grammar(oc, shell, grammar):
+@pytest.mark.parametrize("spelled", ["absolute", "bare"])
+def test_SHELL_decides_the_grammar(oc, shell, grammar, spelled):
     tk, env = oc
-    assert _shell_seen(tk, _no_override(env, shell)) == grammar
+    name = _fake(env, shell) if spelled == "absolute" else shell + (".exe" if WIN else "")
+    assert _shell_seen(tk, _no_override(env, name)) == grammar
 
 
 def test_a_cmd_SHELL_is_named_cmd_and_the_REAL_adapter_refuses_it_inert(oc):
     """cmd has no guard grammar. It was judged as PowerShell; now the adapter refuses it."""
     tk, env = oc
-    name = "C:\\Windows\\System32\\cmd.exe" if WIN else "/usr/bin/cmd"
-    assert _shell_seen(tk, _no_override(env, name)) == "cmd"
+    assert _shell_seen(tk, _no_override(env, _fake(env, "cmd"))) == "cmd"
 
 
 def test_TWIN_cmd_through_the_REAL_adapter_is_INERT(oc):
     tk, env = oc
-    r = drive(tk, _no_override(env, "C:\\Windows\\System32\\cmd.exe" if WIN else "/usr/bin/cmd"),
-              [before("bash", {"command": "echo hi"})])
+    r = drive(tk, _no_override(env, _fake(env, "cmd")), [before("bash", {"command": "echo hi"})])
     s = r["steps"][0]
     assert s["threw"] and "INERT" in s["message"], s
 
@@ -297,15 +312,15 @@ def test_no_SHELL_at_all_is_the_platform_default(oc):
 
 
 def test_the_CONFIGURED_shell_beats_SHELL(oc):
-    """RED before the fix on every OS: the config was never read."""
+    """RED before FX-G3 on every OS: the config was never read."""
     tk, env = oc
-    assert _shell_seen(tk, _no_override(env, "/bin/bash"), config={"shell": "pwsh"}) == "powershell"
-    assert _shell_seen(tk, _no_override(env, "pwsh"), config={"shell": "/bin/bash"}) == "bash"
+    assert _shell_seen(tk, _no_override(env, _fake(env, "bash")), config={"shell": "pwsh"}) == "powershell"
+    assert _shell_seen(tk, _no_override(env, "pwsh"), config={"shell": _fake(env, "bash")}) == "bash"
 
 
 def test_TWIN_a_REFUSED_configured_shell_falls_back_to_the_default_NOT_to_SHELL(oc):
     tk, env = oc
-    other = "pwsh" if not WIN else "/bin/bash"          # the opposite of the platform default
+    other = _fake(env, "pwsh" if not WIN else "bash")   # the opposite of the platform default
     assert _shell_seen(tk, _no_override(env, other), config={"shell": "fish"}) == DEFAULT
 
 
@@ -314,10 +329,59 @@ def test_TWIN_a_config_without_a_shell_leaves_SHELL_in_charge(oc):
     assert _shell_seen(tk, _no_override(env, "pwsh"), config={"model": "x"}) == "powershell"
 
 
-def test_X4_OPENCODE_SHELL_overrides_config_and_SHELL(oc):
+# --- FX-G4 (reviewer G): the grammar can only be the shell OpenCode RUNS ------------------------- #
+
+@pytest.mark.parametrize("missing", ["/no/such/dir/zsh", "zsh-x4-missing", "C:/no/such/pwsh.exe"])
+def test_a_shell_that_does_not_RESOLVE_is_refused_not_guessed(oc, missing):
+    """G-M2 (READ packages/core/src/shell.ts select()): a configured shell that does not resolve makes
+    OpenCode fall back to its platform default -- `shell: zsh` on Windows without zsh runs PowerShell,
+    while the plugin judged bash. The plugin refuses instead of guessing which fallback ran."""
     tk, env = oc
-    env = dict(_no_override(env, "pwsh"), X4_OPENCODE_SHELL="bash")
-    assert _shell_seen(tk, env, config={"shell": "pwsh"}) == "bash"
+    seen = _shell_seen(tk, _no_override(env, _fake(env, "bash")), config={"shell": missing})
+    assert seen.startswith(missing) and "does not resolve" in seen, seen
+    tk2 = tk
+    (tk2 / ".opencode" / "hooks" / "opencode_adapter.py").unlink()
+    shutil.copy2(REPO / ".opencode" / "hooks" / "opencode_adapter.py", tk2 / ".opencode" / "hooks" / "opencode_adapter.py")
+    r = drive(tk2, _no_override(env, _fake(env, "bash")),
+              [{"hook": "config", "input": {"shell": missing}}, before("bash", {"command": "echo hi"})])
+    assert r["steps"][-1]["threw"] and "INERT" in r["steps"][-1]["message"], r
+
+
+def test_X4_OPENCODE_SHELL_can_only_CONFIRM_the_detected_shell(oc):
+    """G-I1, MEASURED: the override made a cmd shell's `del /s /q <reference>/libraries` be judged as
+    bash -- allow. Now a disagreeing declaration refuses every bash call; an agreeing one is a no-op."""
+    tk, env = oc
+    e = dict(_no_override(env, _fake(env, "pwsh")), X4_OPENCODE_SHELL="bash")
+    seen = _shell_seen(tk, e, config={"shell": _fake(env, "pwsh")})
+    assert seen.startswith("powershell") and "disagrees" in seen, seen
+    shutil.copy2(REPO / ".opencode" / "hooks" / "opencode_adapter.py", tk / ".opencode" / "hooks" / "opencode_adapter.py")
+    r = drive(tk, dict(_no_override(env, _fake(env, "cmd")), X4_OPENCODE_SHELL="bash"),
+              [before("bash", {"command": "echo hi"})])
+    assert r["steps"][0]["threw"] and "INERT" in r["steps"][0]["message"], r
+
+
+def test_TWIN_an_AGREEING_X4_OPENCODE_SHELL_changes_nothing(oc):
+    tk, env = oc
+    for decl in ("bash", "/usr/bin/bash"):
+        assert _shell_seen(tk, dict(_no_override(env, _fake(env, "zsh")), X4_OPENCODE_SHELL=decl)) == "bash"
+
+
+def test_the_configured_shell_is_PER_INSTANCE(oc):
+    """G-M3: `configShell` was module-global, so one project's `config` decided the grammar for every
+    other OpenCode instance that loaded the module."""
+    tk, env = oc
+    (tk / ".opencode" / "hooks" / "opencode_adapter.py").write_text(ECHO_SHELL, encoding="utf-8")
+    case = {"ctx": {"directory": str(tk), "worktree": str(tk)}, "instances": 2, "steps": [
+        {"hook": "config", "instance": 0, "input": {"shell": _fake(env, "pwsh")}},
+        {"hook": "config", "instance": 1, "input": {"shell": _fake(env, "bash")}},
+        dict(before("bash", {"command": "echo hi"}), instance=0),
+        dict(before("bash", {"command": "echo hi"}), instance=1)]}
+    cf = tk / "case2.json"
+    cf.write_text(json.dumps(case), encoding="utf-8")
+    r = subprocess.run([NODE, str(DRIVER), str(tk / ".opencode" / "plugins" / "x4guard.js"), str(cf)],
+                       capture_output=True, env=_no_override(env), timeout=180)
+    out = json.loads(r.stdout.decode("utf-8").strip().splitlines()[-1])
+    assert [s["message"] for s in out["steps"][2:]] == ["SHELL=powershell", "SHELL=bash"], out
 
 
 def test_a_POWERSHELL_delete_under_a_pwsh_config_THROWS_through_the_real_guards(oc):
@@ -326,7 +390,7 @@ def test_a_POWERSHELL_delete_under_a_pwsh_config_THROWS_through_the_real_guards(
     pwsh user whose plugin said "bash" had it waved through."""
     tk, env = oc
     cmd = f"Remove-Item -Recurse -Force '{(tk / 'reference' / 'libraries').as_posix()}'"
-    r = drive(tk, _no_override(env, "/bin/bash"),
+    r = drive(tk, _no_override(env, _fake(env, "bash")),
               [{"hook": "config", "input": {"shell": "pwsh"}}, before("bash", {"command": cmd})])
     s = r["steps"][-1]
     assert s["threw"] and "INERT" not in s["message"], s

@@ -98,7 +98,14 @@ def translate(p: dict) -> tuple[list[tuple], list[tuple] | None, str | None]:
     if tool == SHELL_TOOL:
         shell = p.get("shell")
         if shell not in SHELLS:
-            raise Unreadable(f"the shell {shell!r} is not bash or powershell (set X4_OPENCODE_SHELL)")
+            # FX-G4 / reviewer G-I1: the old advice, "set X4_OPENCODE_SHELL", made the guards
+            # judge a cmd command as bash (MEASURED: `del /s /q <reference>\libraries` allowed).
+            # Only OpenCode's own `shell` decides what runs the call, so that is what to change.
+            raise Unreadable(f"OpenCode runs this bash call in the shell {shell!r}, which the X4 guards "
+                             "cannot judge. Set OpenCode's own `shell` config to pwsh, powershell or bash "
+                             "(a path to it) and restart OpenCode; X4_OPENCODE_SHELL cannot change the "
+                             "shell OpenCode runs, and when it disagrees with that shell every bash call "
+                             "is refused")
         cmd = args.get("command")
         if not isinstance(cmd, str):
             raise Unreadable("the bash call carries no command string")
