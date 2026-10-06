@@ -291,3 +291,30 @@ def test_opencode_skips_an_indented_header_codex_obeys():
     text = "*** Begin Patch\n*** Add File: h\n+hi\n  *** Delete File: v\n*** End Patch"
     assert pp.parse_patch(text) == [("add", "h"), ("delete", "v")]
     assert pp.parse_patch_opencode(text) == [("add", "h")]
+
+
+# --- FX-G4 / reviewer H3 (v4.0.0 delta review): a `cd` the SHELL expands is refused -------------
+# MEASURED: `cd $X4_REFERENCE && codex --codex-run-as-apply-patch '...Add File: libraries/x.xml...'`
+# (and `$env:X4_REFERENCE`, and `apply_patch <<EOF` after such a cd) judged the literal path
+# `<cwd>/$X4_REFERENCE/libraries/x.xml`, inside nothing -- allowed. What the agent's shell expands
+# it to is not knowable here, so the patch is refused (the caller turns it into an inert deny).
+_ADD = "*** Begin Patch\n*** Add File: libraries/x.xml\n+<a/>\n*** End Patch"
+
+
+@pytest.mark.parametrize("cd", ["$X4_REFERENCE", '"$X4_REFERENCE"', "${X4_REFERENCE}", "$env:X4_REFERENCE",
+                                "%X4_REFERENCE%", "~/ref", '"$(echo ref)"', "`echo ref`"])
+@pytest.mark.parametrize("form", ["codex --codex-run-as-apply-patch '{p}'", "apply_patch <<'EOF'\n{p}\nEOF"])
+def test_a_shell_patch_after_an_EXPANDED_cd_is_refused(cd, form):
+    """Refused either way: `expands` when the cd form is recognised; a cd word the pattern cannot
+    take whole (a backtick with a space) leaves the patch unattributable, which refuses too."""
+    with pytest.raises(pp.PatchParseError):
+        body, _ = pp.shell_patch(f"cd {cd} && " + form.format(p=_ADD))
+        pp.parse_patch(body)
+
+
+@pytest.mark.parametrize("cd, want", [("dev/mymod", "dev/mymod"), ("'dev/$weird'", "dev/$weird"),
+                                      ('"dev/my mod"', "dev/my mod")])
+def test_TWIN_a_literal_cd_still_names_the_directory(cd, want):
+    """A single-quoted `$` is literal text in bash and PowerShell: not an expansion."""
+    body, got = pp.shell_patch(f"cd {cd} && codex --codex-run-as-apply-patch '{_ADD}'")
+    assert got == want and pp.parse_patch(body) == [("add", "libraries/x.xml")]
