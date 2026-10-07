@@ -528,6 +528,16 @@ SPELLINGS = [
     ("missing-dot-comp",  "sub/../nope.env/.",            False, False),
     ("dotdot-escapes",    "sub/../../x4-paths.env/.",     False, False),
     ("data-stream-missing", "nope.env::$DATA",            False, True),
+    # FX-G6 / reviewer K M2 (MEASURED: bash read nothing, Python read the file): a `::` stream
+    # suffix other than exactly ONE trailing `::$DATA` names no config file -- in both halves.
+    ("data-stream-then-dot", "x4-paths.env::$DATA/.",     False, True),
+    ("data-stream-twice", "x4-paths.env::$DATA::$DATA",   False, True),
+    ("data-stream-space", "x4-paths.env::$DATA ",         False, True),
+    ("data-stream-abs-dot", "{tk}/x4-paths.env::$DATA/.", False, True),
+    # twins: exactly one trailing `::$DATA`, after `.`/`..` and a trailing dot-space, still reads
+    ("dot-then-data-stream", "x4-paths.env/.::$DATA",     True,  True),
+    ("dotdot-data-stream", "{tk}/sub/../x4-paths.env::$DATA", True, True),
+    ("dot-space-data-stream", "x4-paths.env. ::$DATA",    True,  True),
 ]
 
 
@@ -543,6 +553,10 @@ def test_FXG5_python_names_the_file_by_the_SAME_spelling_bash_takes():
         assert sp("x4-paths.env::$DATA") == pathlib.Path("x4-paths.env")
         assert sp("C:/t/x4-paths.env::$Data") == pathlib.Path("C:/t/x4-paths.env")
         assert sp("x4-paths.env:other") == pathlib.Path("x4-paths.env:other")   # twin: a NAMED stream
+        # FX-G6 / reviewer K M2: any further `::` names no config; one trailing `::$DATA` does
+        ns = _paths.config_names_stream
+        assert ns("x4-paths.env::$DATA/.") and ns("a::$DATA::$DATA") and ns("a::$DATA ")
+        assert not ns("x4-paths.env::$DATA") and not ns("C:/t/x4-paths.env") and not ns("a:other")
 
 
 @pytest.mark.parametrize("row", SPELLINGS, ids=[r[0] for r in SPELLINGS])

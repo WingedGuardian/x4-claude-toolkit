@@ -230,6 +230,17 @@ def _config_spelling(cfg: str) -> Path:
     return Path(os.path.normpath(s)) if s else Path(s)
 
 
+def _config_stream(cfg: str) -> bool:
+    """A `::` stream suffix other than exactly one trailing `::$DATA` names NO config file, as in
+    `_x4-env.sh` and `_paths.config_names_stream` (FX-G6 / reviewer K M2). Windows only."""
+    if not _on_windows():
+        return False
+    s = cfg.replace(chr(92), "/")
+    if s.lower().endswith("::$data"):
+        s = s[:-len("::$data")]
+    return "::" in s
+
+
 def _is_stub(path: str | None) -> bool:
     """The Windows bash stubs: WSL's System32/SysWOW64 launcher and the Store alias. They
     RESOLVE, and cannot run a Windows-path script -- a guard started through one fails
@@ -1157,14 +1168,15 @@ def _foreign_config_first(ctx: Ctx, tk: Path) -> str:
     if not cfg:
         return ""
     f = _config_spelling(cfg)
+    found = f.is_file() and not _config_stream(cfg)      # FX-G6 / K M2: a stream names none
     try:
-        inside = f.is_file() and os.path.normcase(str(f.resolve())).startswith(
+        inside = found and os.path.normcase(str(f.resolve())).startswith(
             os.path.normcase(str(Path(tk).resolve())) + os.sep)
     except OSError:
         inside = False
     if inside:
         return ""
-    why = "names a config outside this toolkit" if f.is_file() else "names a file that does not exist"
+    why = "names a config outside this toolkit" if found else "names a file that does not exist"
     return ("first clear the inherited X4_CONFIG (%s; the unpack refuses it whatever the flags): "
             "`unset X4_CONFIG` in bash, `Remove-Item env:X4_CONFIG` in PowerShell -- then " % why)
 
@@ -1242,7 +1254,8 @@ def config_files(ctx: Ctx) -> list[Path]:
     Existing files only, deduplicated."""
     cands = []
     if ctx.env.get("X4_CONFIG"):
-        cands.append(_config_spelling(ctx.env["X4_CONFIG"]))
+        if not _config_stream(ctx.env["X4_CONFIG"]):
+            cands.append(_config_spelling(ctx.env["X4_CONFIG"]))
     vals = (guard_probe(ctx)[0] if guard_dirs(ctx) else None) or {}
     if vals.get("CFG"):
         cands.append(Path(vals["CFG"]))

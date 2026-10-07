@@ -34,6 +34,7 @@ import json
 import os
 import posixpath
 import fnmatch
+import itertools
 import re
 import shutil
 import subprocess
@@ -900,7 +901,7 @@ def resolve_all(tok: str, assigns: dict) -> list:
     if m and (m.group(0).startswith("${") == m.group(0).endswith("}")):
         elems = _array_elements(assigns.get(m.group(1), ""))
         if elems:
-            return [identity_subst(resolve(e, assigns)) for e in elems]
+            return [identity_subst(r) for e in elems for r in resolve_variants(e, assigns)]
     # `"$f/extensions"` inside `for f in A B`: one path PER element. Plain resolve()
     # substitutes the whole `(A B)` text, which is no path at all.
     arrays = {n for n in (a or b for a, b in _VAR.findall(tok))
@@ -908,15 +909,19 @@ def resolve_all(tok: str, assigns: dict) -> list:
     if len(arrays) == 1:
         name = arrays.pop()
         ref = re.compile(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])")
-        return [identity_subst(resolve(ref.sub(lambda _m, e=e: e, tok), assigns))
-                for e in _array_elements(assigns[name])][:64]
-    one = resolve(tok, assigns)
-    # ...and a value that resolves, through other assignments, TO an array's text
-    # (`Z="$f"; rm -rf "$Z"`) is that array's elements, not its literal `(a b)`.
-    elems = _array_elements(one)
-    if elems and not _array_elements(tok):
-        return [identity_subst(resolve(e, assigns)) for e in elems][:64]
-    return [identity_subst(one)]
+        return [identity_subst(r) for e in _array_elements(assigns[name])
+                for r in resolve_variants(ref.sub(lambda _m, e=e: e, tok), assigns)][:64]
+    # Every value an unassigned `${V:+w}` / `${V-w}` can give (FX-G6 / reviewer K C1).
+    out = []
+    for one in resolve_variants(tok, assigns):
+        # ...and a value that resolves, through other assignments, TO an array's text
+        # (`Z="$f"; rm -rf "$Z"`) is that array's elements, not its literal `(a b)`.
+        elems = _array_elements(one)
+        if elems and not _array_elements(tok):
+            out += [identity_subst(resolve(e, assigns)) for e in elems][:64]
+        else:
+            out.append(identity_subst(one))
+    return out
 
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -993,12 +998,38 @@ def _array_elements(value: str) -> list:
     return [t for t, _q in tokens(v[1:-1])]
 
 
-def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
+#: The three states a variable the command never ASSIGNED can be in, for resolve_variants().
+_UNASSIGNED_STATES = ("unset", "empty", "set")
+
+
+def _apply_op(name: str, idx, op: str, assigns: dict, env=None, seen=None) -> str:
     """bash's value for one expansion, or None when text alone cannot say.
 
     Returning None is not a failure -- it routes the token to the conservative path,
     which is the correct answer for `${V%/*}` (a glob) or `${V:2:5}` (an offset).
+
+    `env` / `seen` (FX-G6 / reviewer K C1): a variable the command never assigned has
+    MORE THAN ONE possible value under `-`/`=`/`+` (with or without the colon) -- unset,
+    set but empty, or set to something -- and the single answer returned without `env`
+    is only one of them. `seen` collects such names; `env` maps a name to the state
+    (`_UNASSIGNED_STATES`) a caller wants this expansion judged under. resolve_variants()
+    enumerates them, so a verdict is the strictest over every value the shell can give.
     """
+    unassigned = name not in assigns and idx is None and name.upper() not in ROOT_VARS
+    if unassigned and op and (op[0] in "-=+" or (op[0] == ":" and op[1:2] in ("-", "=", "+"))):
+        colon = op[0] == ":"
+        okind, orest = (op[1], op[2:]) if colon else (op[0], op[1:])
+        if seen is not None:
+            seen.add(name)
+        state = (env or {}).get(name)
+        if state == "set":
+            # Its own value, which text cannot know -- unresolved -- or the alternate word.
+            return orest if okind == "+" else None
+        if state in ("unset", "empty"):
+            is_set = state == "empty" and not colon   # `:` treats EMPTY as unset
+            if okind == "+":
+                return orest if is_set else ""
+            return "" if is_set else orest
     known = name in assigns
     value = assigns.get(name, "")
     if not known and name.upper() in ROOT_VARS:
@@ -1030,6 +1061,9 @@ def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
         # FX-G5 / reviewer J2 item 9 (pre-arc, MEASURED: `rm -rf "${PATH:+$X4_GAME}"` was
         # allowed): a variable this command never ASSIGNED is not known to be unset -- its value
         # comes from the environment -- so the alternate word may be what the shell gives.
+        # It is ONE of the values (FX-G6 / reviewer K C1, MEASURED: this answer alone lost
+        # the EMPTY one, and `rm -rf "${NOPE:+zz}<reference>"` went deny -> allow); every
+        # rule that judges a path asks resolve_variants(), which offers both.
         return rest if (known or name not in assigns) else ""
     if kind == "?":
         return value if known else None
@@ -1076,15 +1110,18 @@ def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
 _MAX_RESOLVED = 65536
 
 
-def resolve(tok: str, assigns: dict[str, str]) -> str:
+def resolve(tok: str, assigns: dict[str, str], env=None, seen=None) -> str:
     """Substitute what this command itself assigned. Text is all a hook can see, so
-    this is the most that could ever be resolved."""
+    this is the most that could ever be resolved.
+
+    ONE value. A token with an unassigned variable under `-`/`=`/`+` has several; a rule
+    that judges a path asks resolve_variants() (`env` / `seen`: see _apply_op)."""
     def sub(m):
         name = m.group(1) or m.group(2)
         return assigns.get(name, m.group(0))
 
     def sub_op(m):
-        got = _apply_op(m.group(1), m.group(2), m.group(3) or "", assigns)
+        got = _apply_op(m.group(1), m.group(2), m.group(3) or "", assigns, env, seen)
         return m.group(0) if got is None else got
 
     prev = None
@@ -1112,6 +1149,40 @@ def resolve(tok: str, assigns: dict[str, str]) -> str:
         if out == prev:
             break
     return expand_home(out)
+
+
+#: How many distinct unassigned variables resolve_variants() enumerates EXHAUSTIVELY
+#: (3 states each: 81 resolves at 4). Past it, every state of each name is still tried with
+#: the others held in each uniform state -- see resolve_variants.
+_MAX_BRANCH_NAMES = 4
+
+
+def resolve_variants(tok: str, assigns: dict) -> list:
+    """EVERY value resolve() can give `tok`, the plain resolve() first (FX-G6 / reviewer K
+    C1). An unassigned variable under `${V:+w}` is unset (`""`) or set (`w`); under
+    `${V-w}` unset (`w`), empty (`""`) or set (its own value, unresolved) -- and a rule must
+    judge each, because `"${NOPE:+zz}<reference>"` IS `<reference>` when NOPE is unset.
+    MEASURED: judging one value made that, `"${NOPE+zz}<reference>"` and
+    `"${NOPE:+./junk}<game>"` ALLOWED (FX-G5 had dropped the empty branch to gain the
+    alternate one). The states are taken PER NAME, so `${A:+./junk}${B:+<game>}` is judged
+    with A unset and B set."""
+    seen = set()
+    out = [resolve(tok, assigns, seen=seen)]
+    if not seen:
+        return out
+    names = sorted(seen)
+    if len(names) <= _MAX_BRANCH_NAMES:
+        combos = itertools.product(_UNASSIGNED_STATES, repeat=len(names))
+    else:
+        # Bounded, never silently one value: each name in each state, the rest uniform.
+        combos = [tuple(s if j == i else u for j in range(len(names)))
+                  for u in _UNASSIGNED_STATES for i in range(len(names))
+                  for s in _UNASSIGNED_STATES]
+    for combo in combos:
+        r = resolve(tok, assigns, env=dict(zip(names, combo)))
+        if r not in out:
+            out.append(r)
+    return out
 
 
 # `$(...)` and `` `...` `` are values this hook can NEVER know. Without them a
@@ -1816,51 +1887,109 @@ _WRAPPER_VALUE_OPTS = {
 }
 
 
-#: An assignment word's start: `NAME=` at the segment start or after a blank/separator.
-_ASSIGN_WORD_AT = re.compile(r"(?:^|(?<=[\s;&|(]))[A-Za-z_][A-Za-z0-9_]*=")
+def _raw_words(seg: str, spans: bool = True) -> list:
+    """The WORDS of `seg` as written (quotes kept), split only at an unquoted, unescaped
+    blank that sits OUTSIDE every `$(...)`, `$((...))`, backtick and `${...}` span -- the
+    word boundaries bash itself uses (FX-G6 / reviewer K I4). tokens() splits inside such a
+    span, so `A=${X:-echo a}` and `env -C $(echo /tmp )` offered a piece of the span as the
+    next word, and that piece became the command name: `A=${X:-echo a} rm -rf <game>` and
+    `env -C $(echo /tmp ) rm -rf <game>` were ALLOWED (MEASURED E2E).
+
+    A span still OPEN at the end of `seg` (a segment cut inside a substitution) is not
+    guessed at: from the word that opened it, the rest splits at blanks exactly as tokens()
+    splits it (`spans=False`)."""
+    out, opened = _scan_words(seg, spans)
+    if opened is not None:
+        k, start = opened
+        return out[:k] + _raw_words(seg[start:], spans=False)
+    return out
 
 
-def _collapse_assignment_substs(seg: str) -> str:
-    """`seg` with every UNQUOTED `$(...)` / backtick span inside an assignment WORD replaced
-    by `$(_)` / `` `_` `` (FX-G5 / reviewer J2 item 3), so tokens() keeps `A=$(echo a b)` as
-    ONE word instead of splitting it at the spaces and offering `a` as the command name.
-    Quote-aware paren matching; an unbalanced span (a segment cut inside the substitution)
-    is left exactly as written. Only assignment words change, and the command word after
-    them is untouched text, so the token _verb_token returns is still found in `seg`."""
-    if "$(" not in seg and chr(96) not in seg:
-        return seg
-    mask = _quote_mask(seg)
-    n, out, i = len(seg), [], 0
-    for m in _ASSIGN_WORD_AT.finditer(seg):
-        if m.start() < i or mask[m.start()]:
+def _span_open(word: str) -> bool:
+    """Does `word` hold a substitution / `${` span it never closes (a segment cut inside
+    one)? Quote-aware, unlike counting parens: `A=$(echo "(")` is closed."""
+    return _scan_words(word, True)[1] is not None
+
+
+def _scan_words(seg: str, spans: bool) -> tuple:
+    """_raw_words' walk: (words, None) -- or, when a span is still open at the end,
+    (words so far, (index of the word that opened it, its start offset in `seg`))."""
+    out, buf, stack = [], [], []
+    esc, last, opened = False, "", None      # opened: (len(out), buf-start) of the outer span
+    for i, c, inq, _k in _qwalk(seg):
+        if esc:
+            esc, last = False, ""
+            buf.append(c)
             continue
-        j = m.end()
-        while j < n and (mask[j] or not seg[j].isspace()):
-            if mask[j]:
-                j += 1
+        if not inq:
+            if c == chr(92):
+                esc = True
+                buf.append(c)
                 continue
-            end = -1
-            if seg.startswith("$(", j):
-                depth = 0
-                for e in range(j + 1, n):
-                    if mask[e]:
-                        continue
-                    depth += {"(": 1, ")": -1}.get(seg[e], 0)
-                    if depth == 0:
-                        end = e
-                        break
-                rep = "$(_)"
-            elif seg[j] == chr(96):
-                end = next((e for e in range(j + 1, n) if seg[e] == chr(96) and not mask[e]), -1)
-                rep = chr(96) + "_" + chr(96)
-            else:
-                j += 1
+            if c.isspace() and not stack:
+                if buf:
+                    out.append("".join(buf))
+                buf, last = [], ""
                 continue
-            if end < 0:
-                break                   # unbalanced: leave the rest as written
-            out.append(seg[i:j] + rep)
-            i = j = end + 1
-    out.append(seg[i:])
+            if spans:
+                top = stack[-1] if stack else ""
+                if c == chr(96) and top == chr(96):
+                    stack.pop()
+                elif c in "({" and last == "$" or c == chr(96) or (c == "(" and top == ")"):
+                    if not stack:
+                        opened = (len(out), i - len(buf))
+                    stack.append({"(": ")", "{": "}"}.get(c, chr(96)))
+                elif stack and c == top:
+                    stack.pop()
+        last = c if not inq else ""
+        buf.append(c)
+    if stack and opened is not None:
+        return out, opened
+    if buf:
+        out.append("".join(buf))
+    return out, None
+
+
+def _spanning_view(cmd: str) -> str:
+    """`cmd` with every unquoted, CLOSED `$(...)` / backtick span that holds a command
+    SEPARATOR (`;`, `&`, `|`, newline) collapsed to `$(_)` / `` `_` `` -- or `cmd` itself
+    when there is none (FX-G6 / reviewer K I4).
+
+    segments() splits at every unquoted separator, inside a substitution too, so `A=$(echo a;
+    echo b) rm -rf <game>` became `A=$(echo a` and `echo b) rm -rf <game>` -- whose verb is
+    `echo`: ALLOWED (MEASURED E2E). facts() walks this view IN ADDITION to the command as
+    written (the substitution's own commands are carried separately, as before), so it can
+    only add what the cut hid: never a fact lost. A span with no separator is left alone,
+    which keeps the view identical to `cmd` -- and so absent -- for nearly every command."""
+    if "$(" not in cmd and chr(96) not in cmd:
+        return cmd
+    mask = _quote_mask(cmd)
+    n, out, i, j = len(cmd), [], 0, 0
+    while j < n:
+        if mask[j] or not (cmd.startswith("$(", j) or cmd[j] == chr(96)):
+            j += 1
+            continue
+        end = -1
+        if cmd[j] == chr(96):
+            end = next((e for e in range(j + 1, n) if cmd[e] == chr(96) and not mask[e]), -1)
+            rep = chr(96) + "_" + chr(96)
+        else:
+            depth = 0
+            for e in range(j + 1, n):
+                if mask[e] or (e > 0 and cmd[e - 1] == chr(92)):
+                    continue
+                depth += {"(": 1, ")": -1}.get(cmd[e], 0)
+                if depth == 0:
+                    end = e
+                    break
+            rep = "$(_)"
+        if end < 0:
+            break                           # unclosed: the rest stays as written
+        if any(not mask[e] and cmd[e] in ";&|" + chr(10) for e in range(j + 1, end)):
+            out.append(cmd[i:j] + rep)
+            i = end + 1
+        j = end + 1
+    out.append(cmd[i:])
     return "".join(out)
 
 
@@ -1903,7 +2032,15 @@ def _verb_token(seg: str) -> str:
     # FX-G5 / reviewer J2 item 3, MEASURED E2E (deny -> ALLOW): tokens() splits an UNQUOTED
     # `A=$(echo a b)` at its spaces, and the word `a` became the verb, so `A=$(echo a b) rm
     # -rf <game>` passed every hard block. An assignment's substitutions are collapsed first.
-    for t, _quoted in tokens(_collapse_assignment_substs(seg)):
+    # FX-G6 / reviewer K I4 (MEASURED E2E: allowed): the same held for a `${...}` with a blank
+    # (`A=${X:-echo a} rm`), a substitution the segmenter cut (`A=$(echo a; echo b) rm`, see
+    # _spanning_view) and a wrapper option's VALUE (`env -C $(echo /tmp ) rm`). One word is
+    # now one word, whatever spans it holds: _raw_words, and its first token for the tests.
+    for w in _raw_words(seg):
+        tk = tokens(w)
+        if not tk:
+            continue
+        t = tk[0][0]
         if want_value:
             # The previous token was a wrapper flag that takes a separate value, so
             # THIS token is that value and never the command.
@@ -2021,9 +2158,10 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
         raw = tokens_of(seg)
         for i, t in enumerate(toks[:-1]):
             if re.fullmatch(r"/{1,2}f", t):
-                r = join_cwd(cwd, subst_root_var(resolve(raw[i + 1], assigns), roots))
-                if under(r, ref) or (rec and contains_root(r, ref)):
-                    return True
+                for rv in resolve_variants(raw[i + 1], assigns):     # FX-G6 / K C1
+                    r = join_cwd(cwd, subst_root_var(rv, roots))
+                    if under(r, ref) or (rec and contains_root(r, ref)):
+                        return True
         return False
     if "icacls" not in v:                # an unset ref: under()/contains_root() are False for ""
         return False
@@ -2037,8 +2175,8 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
     # /restore applies a saved ACL file to paths UNDER the folder named: an ancestor of
     # reference/ reaches it without /T.
     walks = recursive or any(t.startswith("/restore") for t in toks)
-    for o_ in _icacls_paths(seg):
-        r = join_cwd(cwd, subst_root_var(resolve(o_, assigns), roots))
+    for rv in (rv for o_ in _icacls_paths(seg) for rv in resolve_variants(o_, assigns)):
+        r = join_cwd(cwd, subst_root_var(rv, roots))      # every value: FX-G6 / K C1
         if under(r, ref) or (walks and contains_root(r, ref)):
             return True
     return False
@@ -2874,7 +3012,13 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False, roots: dict | None
             if ops:
                 if v == "pushd":
                     stack.append((cwd, from_seed))
-                tgt = subst_root_var(resolve(ops[0], assigns), roots)
+                # One directory, several possible values (FX-G6 / reviewer K C1): the
+                # strictest -- the first that lands under a configured root -- else the
+                # plain resolve(), so `cd "${NOPE:+x}<reference>"` is <reference>.
+                cands = [subst_root_var(r, roots) for r in resolve_variants(ops[0], assigns)]
+                tgt = next((c for c in cands
+                            if any(rt and under(join_cwd(cwd, c), rt)
+                                   for rt in (roots or {}).values())), cands[0])
                 # `cd -` returns somewhere this hook cannot know; refuse to guess.
                 if ops[0] == "-":
                     cwd = ""
@@ -2980,12 +3124,36 @@ def git_discards_named_files(seg):
 _GIT_CONFIG_ENV_SET = re.compile(r"(?<![A-Za-z0-9_])GIT_CONFIG[A-Z0-9_]*\s*=", re.I)
 #: Set per facts() call: does this command set git config through the environment?
 _GIT_ENV_CONFIG = [False]
-#: FX-G5 / reviewer J2 item 5: a `git ... config ...` IN THE COMMAND that writes requireForce
-#: or an include (`git -C <game> config clean.requireForce false && git -C <game> clean -dx`).
-#: Order-blind on purpose -- a config after the clean only costs an ask. The span stops at a
-#: command separator, so `git log --grep requireForce` and `echo requireForce` do not match.
-_GIT_CONFIG_IN_COMMAND = re.compile(
-    r"(?<![A-Za-z0-9_.-])git(?:\.exe)?\b[^;&|\n]*?\sconfig\s[^;&|\n]*?(?:requireforce|include)", re.I)
+#: FX-G6 / reviewer K I2: where git reads its GLOBAL config from. `HOME=/x git clean -dx` reads
+#: `/x/.gitconfig`, which may set clean.requireForce false -- unreadable here, so forced. (The
+#: GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM spellings are already _GIT_CONFIG_ENV_SET.)
+_GIT_HOME_SET = re.compile(r"(?<![A-Za-z0-9_$])(?:HOME|XDG_CONFIG_HOME)\s*=")
+#: Options of `git config` that only READ (and `--show-origin`/`--show-scope`: `--show-*`).
+_GIT_CONFIG_READS = ("--get", "--list", "-l")
+#: git's global options that take the NEXT word as their value.
+_GIT_TOP_VALUE_OPTS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+                       "--config-env", "--super-prefix", "--list-cmds", "--attr-source")
+
+
+def _git_config_writes(seg: str) -> bool:
+    """Is this segment a `git config` that may WRITE (FX-G6 / reviewer K I2)? FX-G5 matched the
+    literal `requireForce` in the command, and the key has other spellings git accepts:
+    `"clean.require""Force"`, `clean.require\\Force`, `K=clean.requireForce; git config $K
+    false` all switched it off unseen (MEASURED E2E: allowed). So ANY `git config` that is not
+    a read (`--get*`, `--list`, `-l`, `--show-*`, or the `get` / `list` subcommands) counts:
+    a clean in the same command is judged as forced -- an ask, never a deny."""
+    if verb(seg) != "git":
+        return False
+    toks = tokens_of(seg)
+    i = next((j for j, t in enumerate(toks) if _verb_name(t) == "git"), len(toks)) + 1
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 2 if toks[i] in _GIT_TOP_VALUE_OPTS else 1
+    if i >= len(toks) or toks[i] != "config" or not toks[i + 1:]:
+        return False
+    args = toks[i + 1:]
+    if any(a.startswith(("--get", "--show-")) or a in _GIT_CONFIG_READS for a in args):
+        return False
+    return next((a for a in args if not a.startswith("-")), "") not in ("get", "list")
 
 
 def _git_destructive(seg, wanted, deep=False):
@@ -3778,18 +3946,31 @@ def _procsub_program(seg: str) -> list:
     # substitution, or a `-n` after the script (its $1), is not one. An option that takes a
     # VALUE (`-o pipefail`, `-O extglob`, `+o posix`, `-eo pipefail`, `--rcfile f`,
     # `--init-file f`) is stepped over WITH its value, or the value reads as the script.
+    # FX-G6 / reviewer K C2 (REGRESSION of f03d19b, MEASURED E2E deny -> allow): a lone `-`,
+    # like `--`, ENDS the options -- the NEXT word is the script (`bash - <(echo ...)`,
+    # `bash -x - <(...)`). K I3 (MEASURED: allowed): `+n` turns `-n` back OFF, so only the LAST
+    # n-toggle counts -- in a clustered word too (`-xn`, `+xn`), and `+o noexec` cancels too.
     first, syntax_only, j = None, False, k + 1
     while j < len(toks):
         t, q = toks[j]
-        if q or t[:1] not in ("-", "+") or t in ("-", "+"):
+        if not q and t in ("-", "--"):
+            first = toks[j + 1] if j + 1 < len(toks) else None
+            break
+        if q or t[:1] not in ("-", "+") or t == "+":
             first = (t, q)
             break
         if t.startswith("--"):
             j += 2 if t in ("--rcfile", "--init-file") else 1
             continue
-        if t[0] == "-" and "n" in t[1:]:
-            syntax_only = True
-        j += 1 + sum(1 for ch in t[1:] if ch in "oO")   # each o/O takes the next word
+        j += 1
+        for ch in t[1:]:
+            if ch == "n":
+                syntax_only = t[0] == "-"
+            elif ch in "oO":                         # each o/O takes the next word
+                val = toks[j][0] if j < len(toks) else ""
+                if ch == "o" and val == "noexec" and t[0] == "+":
+                    syntax_only = False          # `-o noexec` is NOT exempted: only `-n` is
+                j += 1
     if not first or first[1] or not first[0].startswith("<("):
         return []
     if syntax_only:
@@ -4205,8 +4386,11 @@ def _windows_carrier(seg: str, cmd: str, prev=None) -> list:
         for i, t in enumerate(toks[1:], 1):
             # /R is cmd's older synonym of /C (finding 3).
             if re.fullmatch(r"/{1,2}[cCkKrR]", t):
-                rest = [resolve(x, _text_assignments(cmd)) for x in toks[i + 1:]]
-                inline = [cmd_to_sh(rest)] if rest else []
+                # Every value of the text (FX-G6 / reviewer K C1, fuzz-guard): one carried
+                # command per value of an unassigned `${V:+w}`, joined on a NUL no token holds.
+                raw = chr(0).join(toks[i + 1:])
+                inline = [cmd_to_sh(r_.split(chr(0)))
+                          for r_ in resolve_variants(raw, _text_assignments(cmd))] if raw else []
                 break
         if not _cmd_toks_read_stdin(toks):
             return inline
@@ -4309,7 +4493,9 @@ def _inner_commands(cmd: str) -> list[str]:
                     # were using it. Same-command assignment is exactly what that
                     # machinery is for; the carrier walk was the one consumer not using
                     # it, so a two-statement command any script writes lost the block.
-                    out.append(resolve(toks[i + 1][0], assignments(cmd)))
+                    # EVERY value (FX-G6 / reviewer K C1, found by fuzz-guard): one resolve()
+                    # judged `bash -c 'rm -rf "${NOPE:+zz}<ref>"'` as the alternate only.
+                    out.extend(resolve_variants(toks[i + 1][0], assignments(cmd)))
                     break
         elif v == "eval":
             # `eval` concatenates its arguments and runs the result.
@@ -4323,7 +4509,7 @@ def _inner_commands(cmd: str) -> list[str]:
                       if _verb_name(t) == "eval"), 0)
             parts = [t for t, _ in toks[k + 1:] if not t.startswith("-")]
             if parts:
-                out.append(resolve(" ".join(parts), assignments(cmd)))
+                out.extend(resolve_variants(" ".join(parts), assignments(cmd)))   # FX-G6 / K C1
         elif v == "trap":
             # `trap <cmd> <SIGNAL...>` runs its first operand as a command when the
             # signal fires. That operand is normally single-quoted, which is exactly
@@ -4470,7 +4656,7 @@ def facts(payload: dict, roots: dict) -> dict:
     # FX-G4 / reviewer H6: git config from the ENVIRONMENT (see _git_destructive).
     _GIT_ENV_CONFIG[0] = bool(_GIT_CONFIG_ENV_SET.search(body)
                               or _GIT_CONFIG_ENV_SET.search(inp.get("command") or "")
-                              or _GIT_CONFIG_IN_COMMAND.search(body))
+                              or _GIT_HOME_SET.search(body))
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
     extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
@@ -4488,17 +4674,33 @@ def facts(payload: dict, roots: dict) -> dict:
             _UNTRANSLATED.extend(unknown_)
             extra.append(sh_)
     all_cmds, carriers_truncated = carried_commands(body, extra)
+    # ...and each one with its separator-holding substitutions collapsed (FX-G6 / reviewer
+    # K I4): `A=$(echo a; echo b) rm -rf <game>` -- see _spanning_view. Inserted after the
+    # top level, so the last command (and the `cwd` fact read from it) is unchanged; the
+    # top level's own view is seeded with the session directory exactly as the top level is.
+    top_view = _spanning_view(body)
+    views = []
+    for c_ in all_cmds:
+        v_ = _spanning_view(c_)
+        if v_ != c_ and v_ not in all_cmds and v_ not in views:
+            views.append(v_)
+    carried = list(all_cmds)            # the assignment tables read the commands as written
+    all_cmds[1:1] = views
+    # FX-G6 / reviewer K I2: a `git config` that may WRITE, anywhere in the command (any
+    # carried command too), may switch clean.requireForce off -- see _git_config_writes.
+    _GIT_ENV_CONFIG[0] = _GIT_ENV_CONFIG[0] or any(
+        _git_config_writes(s_) for c_ in all_cmds for s_ in segments(c_))
     assigns = assignments(body)
     # Assignments made INSIDE a carrier (`bash -c 'D=<root>; rm -rf "$D"'`, a heredoc fed
     # to a shell, eval) are the carried command's own; the top level's win on a clash.
     # MEASURED by fuzz-guard's new seeds (v3.3.0 release review): a for-loop or a
     # realpath assignment inside any carrier reached no rule.
-    for c_ in all_cmds[1:]:
+    for c_ in carried[1:]:
         for k_, v_ in assignments(c_).items():
             assigns.setdefault(k_, v_)
     # The table as it was before this lane (no `$(...)` values, no loop word lists), for
     # the targets whose rules were deliberately NOT widened -- see prep(expand=False).
-    plain_assigns = plain_assignments(assigns, all_cmds)
+    plain_assigns = plain_assignments(assigns, carried)
     ncmd = norm(cmd)
 
     # Every operand is classified WHERE IT RUNS. `cwd_track` was the missing link: the
@@ -4516,7 +4718,8 @@ def facts(payload: dict, roots: dict) -> dict:
     moves = any(verb(s) in DIR_VERBS or verb(s) == "popd"
                 for c_ in all_cmds for s in segments(c_))
     for i_, c in enumerate(all_cmds):
-        tracked = cwd_track(c, base if (i_ == 0 or not moves) else "", seeded=True, roots=roots)
+        top = i_ == 0 or c == top_view
+        tracked = cwd_track(c, base if (top or not moves) else "", seeded=True, roots=roots)
         seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]
         # The segment BEFORE each one in the same carried command: what feeds an xargs.
         seg_prev += [None] + [s for s, _d in tracked][:-1] if tracked else []
@@ -4561,14 +4764,11 @@ def facts(payload: dict, roots: dict) -> dict:
         # MEASURED: `x=$(printf rm); A=$(true) $x -rf <reference>` was allowed): an assignment, or
         # a wrapper's value (`sudo -u $(whoami) $x`), is stepped over exactly as _verb_token steps
         # over it to find the command word. Only an UNCLOSED one is the cut fragment above.
-        toks = tokens_of(_collapse_assignment_substs(seg))
-        k = toks.index(t) if t in toks else 0
+        # The same WORDS _verb_token walks (FX-G6 / reviewer K I4): `env -C $(echo /tmp ) $x`.
+        toks = _raw_words(seg)
+        k = next((i for i, w in enumerate(toks) if (tokens(w) or [("",)])[0][0] == t), 0)
 
-        def _hides_position(x):
-            if "$(" not in x and chr(96) not in x:
-                return False
-            return not (x.count("(") == x.count(")") and x.count(chr(96)) % 2 == 0)
-        if any(_hides_position(x) for x in toks[:k]):
+        if any(_span_open(x) for x in toks[:k]):
             return False
         return bool(_SUBST.search(resolve(t, assigns)))
 
@@ -4585,8 +4785,8 @@ def facts(payload: dict, roots: dict) -> dict:
         # still required, which is what priced this rule at 4 hits in 28,989.
         if not _subst_verb(seg):
             return False
-        for o in _operands(seg):
-            r = resolve(o, assigns)
+        # Every value of every operand (FX-G6 / reviewer K C1): `"${NOPE:+x}<game>"` too.
+        for r in (r for o in _operands(seg) for r in resolve_variants(o, assigns)):
             if any(v and is_root(r, v) for v in roots.values()):
                 return True
             # ...and anything INSIDE reference/, whose every delete and write is a hard
@@ -4817,8 +5017,9 @@ def facts(payload: dict, roots: dict) -> dict:
     search_roots = []
     for s, c_cwd in seg_cwd:
         for p in search_paths(s):
-                r = resolve(p, assigns)
-                search_roots.append(c_cwd if r in (".", "./") else r)
+                # Every value (FX-G6 / K C1): `find "${NOPE:+x}<game>"` searches <game>.
+                for r in resolve_variants(p, assigns):
+                    search_roots.append(c_cwd if r in (".", "./") else r)
 
     def rooted(root):
         return bool(root) and any(is_root(p, root) for p in search_roots)
@@ -4990,7 +5191,7 @@ def facts(payload: dict, roots: dict) -> dict:
         # usually arrives through a variable -- which the whole-body form got for free
         # and a naive per-segment rewrite would have silently dropped.
         "durable_python_open_w": any(
-            (DURABLE.search(sg) or DURABLE.search(resolve(sg, assigns)))
+            (DURABLE.search(sg) or any(DURABLE.search(x) for x in resolve_variants(sg, assigns)))
             # `[^,]*`, NOT `[^)]*`: a class excluding `)` cannot cross one, and this
             # machine's game root sits under `Program Files (x86)`. MEASURED 2026-09-04:
             # the rule was structurally DEAD for the two files its own docstring names --
@@ -5002,8 +5203,8 @@ def facts(payload: dict, roots: dict) -> dict:
             # consulted `resolve`; the mode half did not, which the fuzzer measured
             # as 3 bypasses of a DENY on 2026-09-06.
             and (re.search(r"open\([^,]*,\s*[\"']w[\"']", sg)
-                 or re.search(r"open\([^,]*,\s*[\"']w[\"']",
-                              resolve(sg, assigns)))
+                 or any(re.search(r"open\([^,]*,\s*[\"']w[\"']", x)
+                        for x in resolve_variants(sg, assigns)))
             and _verb_name(verb(sg)) in _PYTHONS
             # OVER `all_cmds`, not `segments(body)` -- the same defect as B4, in the
             # rule with the most to lose. MEASURED 2026-09-06 by the fuzzer, once this
@@ -5099,8 +5300,8 @@ def facts(payload: dict, roots: dict) -> dict:
             "xrcat" in _verb_name(verb(sg)).lower()
             and any(tk.startswith("-out") for tk in tokens_of(sg))
             and bool(roots.get("reference"))
-            and any(is_root(resolve(o_, assigns), roots["reference"])
-                    for o_ in _operands(sg))
+            and any(is_root(r_, roots["reference"])
+                    for o_ in _operands(sg) for r_ in resolve_variants(o_, assigns))
             for sg, _c in seg_cwd),
         # Lifting the OS deny on reference/ (Plan 2 lane D). D8: only the USER lifts a
         # protection, so an agent's lift is an ASK. Segment-scoped like xrcat_reunpack.

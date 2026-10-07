@@ -1604,6 +1604,22 @@ def test_FXG5_the_root_s_OWN_config_in_ANY_spelling_needs_no_clearing(sandbox, t
     assert doc._config_spelling(env["X4_CONFIG"]) == Path(os.path.normpath(sandbox.root / "x4-paths.env"))
 
 
+@pytest.mark.skipif(os.name != "nt", reason="a Windows stream spelling -- elsewhere `::` is a filename byte")
+@pytest.mark.parametrize("suffix", ["::$DATA/.", "::$DATA::$DATA", "::$DATA "])
+def test_FXG6_a_further_stream_suffix_names_NO_config(sandbox, tmp_path, suffix):
+    """FX-G6 / reviewer K M2 (MEASURED: Windows opens these as the file; the bash loader finds
+    none): any `::` beyond exactly one trailing `::$DATA` names no config, so the doctor says
+    to clear X4_CONFIG, as for a missing file -- the same answer as both loaders."""
+    _fresh(sandbox, tmp_path)
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env["X4_CONFIG"] = str(sandbox.root / "x4-paths.env") + suffix
+    row = _roots_ref_row(sandbox, env=env)
+    assert "unset X4_CONFIG" in row.detail, (suffix, row)
+    assert doc._config_stream(env["X4_CONFIG"])
+    # twin: exactly one trailing `::$DATA` still names the file
+    assert not doc._config_stream(str(sandbox.root / "x4-paths.env") + "::$DATA")
+
+
 def test_FXG5_TWIN_a_missing_config_in_the_same_spelling_still_says_clear_it(sandbox, tmp_path):
     _fresh(sandbox, tmp_path)
     env = {k: v for k, v in os.environ.items() if k not in _LEAKY}

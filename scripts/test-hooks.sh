@@ -528,7 +528,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=290
+EXPECT=305
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1327,6 +1327,24 @@ decide allow  protect-bash.sh "$(cj "bash -o pipefail -n <(echo ${_RMG})")"     
 decide deny   protect-bash.sh "$(cj 'rm -rf "${PATH:+$X4_GAME}"')"                        "J2-9: the alternate of an unassigned variable is judged"
 decide ask    protect-bash.sh "$(cj "git -c include.path=/w/c.cfg -C \"$_g4tk\" clean -dx")" "J2-5: -c include.path forces a clean"
 decide allow  protect-bash.sh "$(cj "git -c core.x=1 -C \"$_g4tk\" clean -dx")"          "TWIN J2-5: other -c leaves an unforced clean alone"
+# FX-G6 / reviewer K: each was ALLOWED at 47d06cd (C1, C2 regressions of FX-G5; I2-I4 pre-arc)
+decide deny   protect-bash.sh "$(cj "rm -rf \"\${G6_NOPE:+zz}$_g4r\"")"                     "K-C1: the EMPTY branch of an unassigned :+ is judged"
+decide deny   protect-bash.sh "$(cj "rm -rf \"\${G6_NOPE+zz}$_g4r\"")"                      "K-C1: ...and of an unassigned +"
+decide deny   protect-bash.sh "$(cj "rm -rf \"\${G6_NOPE:+./junk}$_g4g\"")"                 "K-C1: ...a relative alternate before the game root"
+decide allow  protect-bash.sh "$(cj 'rm -rf "${TMPDIR:+$TMPDIR/}g6build"')"                 "TWIN K-C1: an ordinary alternate stays harmless"
+decide deny   protect-bash.sh "$(cj "bash - <(echo ${_RMG})")"                             "K-C2: a lone - ends the options; the procsub is the script"
+decide deny   protect-bash.sh "$(cj "sh -x - <(echo ${_RMG})")"                            "K-C2: ...after an option too"
+decide deny   protect-bash.sh "$(cj "bash -n +n <(echo ${_RMG})")"                         "K-I3: +n turns -n back off"
+decide allow  protect-bash.sh "$(cj "bash +n -n <(echo ${_RMG})")"                         "TWIN K-I3: the LAST n-toggle is -n: a syntax check"
+decide deny   protect-bash.sh "$(cj "A=\${G6_X:-echo a} ${_RMG}")"                          "K-I4: a \${...} with a blank is one word"
+decide deny   protect-bash.sh "$(cj "A=\$(echo a; echo b) ${_RMG}")"                        "K-I4: a substitution the segmenter cut hides no verb"
+decide deny   protect-bash.sh "$(cj "env -C \$(echo /tmp ) ${_RMG}")"                       "K-I4: a wrapper option's VALUE is one word"
+decide allow  protect-bash.sh "$(cj "A=\$(echo a; echo b) ls \"$_g4g\"")"                   "TWIN K-I4: a harmless command behind the cut stays harmless"
+decide ask    protect-bash.sh "$(cj "git -C \"$_g4tk\" config \"clean.require\"\"Force\" false && git -C \"$_g4tk\" clean -dx")" \
+  "K-I2: ANY writing git config forces a following clean"
+decide ask    protect-bash.sh "$(cj "HOME=/w git -C \"$_g4tk\" clean -dx")"                 "K-I2: a moved HOME forces a clean"
+decide allow  protect-bash.sh "$(cj "git -C \"$_g4tk\" config --get user.name && git -C \"$_g4tk\" clean -dx")" \
+  "TWIN K-I2: a READ of git config does not"
 decide ask    protect-bash.sh "$(cj "takeown /f \"$_g4r\" /r")"                           "H-M5: takeown of reference asks"
 decide deny   protect-bash.sh "$(cj "gio trash \"file://${_g4g// /%20}\"")"               "H-M3: a percent-encoded file:// URL is decoded"
 _hk(){ printf '{"tool_name":"Write","tool_input":{"file_path":%s,"content":%s}}' \

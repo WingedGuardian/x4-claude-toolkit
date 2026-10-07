@@ -280,3 +280,46 @@ def test_the_plugin_judges_every_built_in_tool_that_writes():
     assert judged == {"bash", "edit", "write", "apply_patch"}, judged
     doc = (REPO / "docs" / "superpowers" / "measurements" / "2026-10-02-opencode-read.md").read_text(encoding="utf-8")
     assert re.search(r"^\| R15 \|.*exactly bash, edit, write, apply_patch", doc, re.M)
+
+
+# --- FX-G6 / reviewer K I5: an `edit` of a settings file is APPLIED and its RESULT judged ---------
+# MEASURED (reviewer K): only the edit's new text was judged, so two innocent edits -- add
+# `"X4_GUA": "x"`, then replace `A": "x"` with `ARD": "off"` -- built X4_GUARD=off.
+def _settings(tk, text):
+    s = tk / ".claude" / "settings.json"
+    s.parent.mkdir(exist_ok=True)
+    s.write_text(text, encoding="utf-8")
+    return s
+
+
+def test_a_two_step_edit_that_BUILDS_X4_GUARD_is_denied(sandbox):
+    tmp, tk, env = sandbox
+    s = _settings(tk, '{"env": {"X4_GUA": "x"}}')
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": 'A": "x"', "newString": 'ARD": "off"'}))
+    assert v["decision"] == "deny" and not v["inert"] and "X4_GUARD" in v["reason"], v
+    # ...replace_all too (the FIRST `GUA` is a value; only replacing every one builds the key)
+    _settings(tk, '{"env": {"A": "GUA", "X4_GUA": "x"}}')
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": "GUA", "newString": "GUARD",
+                                   "replaceAll": True}))
+    assert v["decision"] == "deny", v
+    # ...and an edit that does not apply here whose text could finish the key
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": "nowhere", "newString": 'RD": "off"'}))
+    assert v["decision"] == "deny", v
+
+
+# --- one falsification twin per clause ---
+def test_TWIN_an_edit_whose_result_has_no_key_is_allowed(sandbox):
+    tmp, tk, env = sandbox
+    s = _settings(tk, '{"env": {"X4_GUA": "x"}}')
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": '"x"', "newString": '"y"'}))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+    # an edit that does not apply here, with a text that cannot form the key wherever it lands
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": "nowhere", "newString": '"y"'}))
+    assert v["decision"] in ("allow", "advise"), v
+    # unchanged: a write is judged on its text, and a file that already names the key refuses
+    v = run(env, call(tk, "write", {"filePath": str(s), "content": '{"env": {"A": "1"}}'}))
+    assert v["decision"] in ("allow", "advise"), v
+    # ...even an edit that would REMOVE it (refused before FX-G6 too: never a deny turned allow)
+    _settings(tk, '{"env": {"X4_GUARD": "off"}}')
+    v = run(env, call(tk, "edit", {"filePath": str(s), "oldString": '"X4_GUARD": "off"', "newString": '"A": "1"'}))
+    assert v["decision"] == "deny", v

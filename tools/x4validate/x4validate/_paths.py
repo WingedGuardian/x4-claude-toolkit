@@ -393,6 +393,14 @@ def config_spelling(value: str) -> Path:
     return Path(os.path.normpath(v)) if v else Path(v)
 
 
+def config_names_stream(value: str) -> bool:
+    """Does an explicit `$X4_CONFIG` name a Windows stream OTHER than exactly one trailing
+    `::$DATA` -- `x4-paths.env::$DATA/.`, `::$DATA::$DATA`, `::$DATA ` (FX-G6 / reviewer K M2)?
+    Windows opens those as the file, and `_x4-env.sh` finds none: such a spelling names NO
+    config file, in both loaders. Windows only; elsewhere `::` is an ordinary filename byte."""
+    return _IS_WINDOWS and "::" in _DATA_STREAM.sub("", native(value).replace(chr(92), "/"))
+
+
 def _locate_config() -> tuple[Path | None, str, Path | None]:
     """`(file read or None, state, the OTHER location)` by the module docstring's rule.
 
@@ -403,7 +411,9 @@ def _locate_config() -> tuple[Path | None, str, Path | None]:
     explicit = os.environ.get("X4_CONFIG")
     if explicit:                                  # empty counts as unset, like ${X4_CONFIG:-}
         p = config_spelling(explicit)
-        return (p, "explicit", None) if p.is_file() else (None, "explicit-missing", None)
+        if p.is_file() and not config_names_stream(explicit):
+            return p, "explicit", None
+        return None, "explicit-missing", None
     toolkit = toolkit_root()                      # B2: the toolkit this code lives in
     if toolkit is not None:
         roots = [toolkit]
@@ -760,7 +770,7 @@ def config_conflict() -> tuple[Path, Path, bool] | None:
     if acting is None:
         return None
     p = config_spelling(explicit)
-    exists = p.is_file()
+    exists = p.is_file() and not config_names_stream(explicit)
     if exists and _inside(p, acting):
         return None
     return acting, p, exists

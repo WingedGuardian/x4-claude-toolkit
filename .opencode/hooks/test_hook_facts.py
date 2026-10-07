@@ -4896,6 +4896,70 @@ class TestJ2AlternateOfAnUnknownVariable(unittest.TestCase):
         self.assertEqual(H._apply_op("NOPE", None, ":-/x", {}), "/x")
 
 
+class TestK_C1EveryValueOfAnUnknownVariable(unittest.TestCase):
+    """FX-G6 / reviewer K C1 (REGRESSION of FX-G5 f03d19b, MEASURED E2E deny -> allow): judging
+    `${NOPE:+w}` as the alternate word ALONE lost the EMPTY branch -- `rm -rf "${NOPE:+zz}<ref>"`
+    IS `rm -rf <ref>` when NOPE is unset. An unassigned variable under `-`/`=`/`+` (colon or
+    not) has several values -- unset, empty, set -- and every path rule judges each one."""
+
+    def test_the_empty_branch_is_judged_again(self):
+        # REF, not GAME: the game root's folder NAME has a text backstop of its own, which
+        # would pass these rows with or without the branches (measured by the mutants)
+        for c in (D + ' -rf "${NOPE:+zz}' + REF + '"', D + ' -rf "${NOPE+zz}' + REF + '"',
+                  'cd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries',
+                  D + ' -rf "${NOPE-./junk}' + REF + '"',
+                  # states are PER NAME: A unset and B set
+                  D + ' -rf "${A:+./junk}${B:+' + REF + '}"',
+                  # past _MAX_BRANCH_NAMES: one name set, the rest uniform
+                  D + ' -rf "${A:+./j}${B:+x}${C:+y}${D:+z}${E:+' + REF + '}"',
+                  # ...and inside a CARRIER, whose text was resolved to ONE value (fuzz-guard)
+                  "bash -c " + Q + D + ' -rf "${NOPE:+zz}' + REF + '"' + Q,
+                  "eval " + Q + D + ' -rf "${NOPE:+zz}' + REF + '"' + Q,
+                  "cmd //c rd /s /q " + DQ + "${NOPE:+zz}" + REF + DQ):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["rm_targets_reference"], c)
+        for c in (D + ' -rf "${NOPE:+./junk}' + GAME + '"', D + ' -rf "${NOPE:+x}$X4_GAME"',
+                  # `-` without the colon: set-but-EMPTY gives "" (the "empty" state)
+                  D + ' -rf "${NOPE-./junk}' + GAME + '"',
+                  # states are PER NAME: A unset and B set
+                  D + ' -rf "${A:+./junk}${B:+' + GAME + '}"',
+                  # past _MAX_BRANCH_NAMES: one name set, the rest uniform
+                  D + ' -rf "${A:+./j}${B:+x}${C:+y}${D:+z}${E:+' + GAME + '}"',
+                  # ...and the alternate branch (FX-G5) still stands
+                  D + ' -rf "${PATH:+$X4_GAME}"'):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["rm_hits_game"], c)
+
+    def test_resolve_variants_offers_every_state(self):
+        self.assertEqual(sorted(H.resolve_variants("${NOPE:+zz}", {})), ["", "zz"])
+        self.assertEqual(sorted(H.resolve_variants("${NOPE-w}x", {})), ["${NOPE-w}x", "wx", "x"])
+        self.assertEqual(H.resolve_variants("${NOPE:+zz}", {})[0], "zz")   # resolve() first
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_an_assigned_variable_has_one_value(self):
+        self.assertEqual(H.resolve_variants("${V:+zz}" + REF, {"V": "x"}), ["zz" + REF])
+        self.assertFalse(FC('V=x; ' + D + ' -rf "${V:+zz}' + REF + '"', _ELSEWHERE)["rm_targets_reference"])
+
+    def test_TWIN_no_operator_is_not_branched(self):
+        self.assertEqual(H.resolve_variants("$NOPE/x", {}), ["$NOPE/x"])
+        self.assertEqual(H.resolve_variants("${NOPE%/x}", {}), ["${NOPE%/x}"])
+
+    def test_TWIN_the_colon_treats_empty_as_unset(self):
+        self.assertEqual(H._apply_op("N", None, ":-w", {}, env={"N": "empty"}), "w")
+        self.assertEqual(H._apply_op("N", None, "-w", {}, env={"N": "empty"}), "")
+        self.assertEqual(H._apply_op("N", None, ":+w", {}, env={"N": "empty"}), "")
+        self.assertEqual(H._apply_op("N", None, "+w", {}, env={"N": "empty"}), "w")
+        self.assertIsNone(H._apply_op("N", None, ":-w", {}, env={"N": "set"}))
+        self.assertEqual(H._apply_op("N", None, ":+w", {}, env={"N": "unset"}), "")
+
+    def test_TWIN_ordinary_alternate_words_stay_harmless(self):
+        for c in (D + ' -rf "${TMPDIR:+$TMPDIR/}build"', D + ' -rf "build${SUFFIX:+-$SUFFIX}"',
+                  'export PATH="/x/bin${PATH:+:$PATH}"', 'cp -r a "${OUT:+$OUT/}dist"'):
+            with self.subTest(c=c):
+                f = FC(c, _ELSEWHERE)
+                self.assertFalse(f["rm_hits_game"] or f["rm_targets_reference"] or f["rm_in_x4_dir"], c)
+
+
 class TestH6GitConfigFromTheEnvironment(unittest.TestCase):
     """H6 (MEASURED: deletes): git config from the ENVIRONMENT switches requireForce off."""
 
@@ -4942,11 +5006,35 @@ class TestJ2GitCleanForcedByConfigIncludeOrCommand(unittest.TestCase):
             with self.subTest(pre=pre):
                 self.assertTrue(FC(pre + self.C, _ELSEWHERE)["git_wipes_x4_dir"], pre)
 
+    def test_ANY_writing_git_config_or_a_moved_HOME_forces_the_clean(self):
+        """FX-G6 / reviewer K I2 (MEASURED E2E: allowed): the key has spellings the literal
+        `requireForce` match never saw, and a value can arrive through a variable -- so ANY
+        `git config` that is not a read forces a clean in the same command; and HOME /
+        XDG_CONFIG_HOME move the global config file git reads."""
+        G_ = 'git -C "' + GAME + '" config '
+        for pre in (G_ + '"clean.require""Force" false && ', G_ + "clean.require" + BS + "Force false && ",
+                    "K=clean.requireForce; " + G_ + "$K false && ", G_ + "user.name x && ",
+                    G_ + "--unset core.x; ", G_ + "set clean.requireforce false; ",
+                    "HOME=/x ", "XDG_CONFIG_HOME=/x ", "env HOME=/x ", "export HOME=/x; ",
+                    "GIT_CONFIG_SYSTEM=/x ", "bash -c 'git config a.b c'; "):
+            with self.subTest(pre=pre):
+                self.assertTrue(FC(pre + self.C, _ELSEWHERE)["git_wipes_x4_dir"], pre)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_READ_of_git_config_leaves_the_clean_unforced(self):
+        G_ = 'git -C "' + GAME + '" config '
+        for pre in (G_ + "--get user.name && ", G_ + "--list; ", G_ + "-l; ", G_ + "--get-all a.b; ",
+                    G_ + "--get-regexp a; ", G_ + "--show-origin --list; ", G_ + "get user.name; ",
+                    G_ + "list; ", "git config; ", "echo $HOME; ", "MYHOME=/x "):
+            with self.subTest(pre=pre):
+                self.assertFalse(FC(pre + self.C, _ELSEWHERE)["git_wipes_x4_dir"], pre)
+        self.assertFalse(H._git_config_writes("git -c a.b=c log config"))
+        self.assertTrue(H._git_config_writes("git -c a.b=c config x y"))
+
     # --- one falsification twin per clause ---
     def test_TWIN_other_config_leaves_the_clean_unforced(self):
         for c in ("git -c core.fileMode=false -C " + DQ + GAME + DQ + " clean -dx",
                   "git -c user.include=x -C " + DQ + GAME + DQ + " clean -dx",
-                  'git -C "' + GAME + '" config user.name x && ' + self.C,
                   'echo requireForce && ' + self.C,
                   'git log --grep requireForce && ' + self.C):
             with self.subTest(c=c):
@@ -4995,6 +5083,32 @@ class TestH7H8TextPipedIntoAShell(unittest.TestCase):
                   "bash -o pipefail -- <(echo " + DEL_GAME + ")", "sh +n <(echo " + DEL_GAME + ")"):
             with self.subTest(c=c):
                 self.assertTrue(F(c)["rm_hits_game"], c)
+
+    def test_a_lone_dash_ends_the_options_and_plus_n_cancels_minus_n(self):
+        """FX-G6 / reviewer K C2 (REGRESSION of f03d19b, MEASURED E2E deny -> allow): `-` (like
+        `--`) ends the options and the NEXT word is the script. K I3 (MEASURED: allowed): `+n`
+        turns `-n` off again, so only the LAST n-toggle makes it a syntax check."""
+        P = " <(echo " + DEL_GAME + ")"
+        for c in ("bash -" + P, "sh -" + P, "bash -x -" + P, "bash --" + P, "bash -o pipefail -" + P,
+                  "bash -n +n" + P, "bash -xn +xn" + P, "bash -n +o noexec" + P,
+                  "bash -o noexec +n" + P, "sh -n +n" + P, "bash -n -x +n -" + P,
+                  # conservative, as at 47d06cd: only `-n` is the exemption (user decision)
+                  "bash -o noexec" + P):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_the_last_n_toggle_and_a_script_after_the_dash_decide(self):
+        P = " <(echo " + DEL_GAME + ")"
+        for c in ("bash +n -n" + P, "bash +xn -xn" + P, "bash +o noexec -n" + P,
+                  "bash -n -" + P, "bash -n --" + P,
+                  # after `--` the next word is the SCRIPT even when it looks like `+n`
+                  "bash -n -- +n" + P,
+                  # after `-`, a script FILE is the program and the substitution its argument
+                  "bash - ./x.sh" + P, "bash -- ./x.sh" + P):
+            with self.subTest(c=c):
+                f = F(c)
+                self.assertFalse(f["rm_hits_game"] or f["carrier_untranslated"], c)
 
     # --- one falsification twin per clause ---
     def test_TWIN_a_harmless_program_a_non_shell_or_a_script_argument_is_not(self):
@@ -5063,6 +5177,44 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
         # twin: the collapsed prefix leaves a harmless command harmless
         self.assertFalse(F("A=$(echo a b) ls " + DQ + GAME + DQ)["rm_hits_game"])
         self.assertEqual(H.verb("A=$(echo a b) ls x"), "ls")
+
+    def test_a_word_holding_a_span_is_ONE_word(self):
+        """FX-G6 / reviewer K I4 (MEASURED E2E: allowed): a `${...}` with a blank, a substitution
+        holding a separator (the segmenter cut it), or a wrapper option's VALUE with a blank
+        offered a piece of itself as the command name."""
+        for c in ("A=${X:-echo a} " + DEL_GAME, "A=$(echo a; echo b) " + DEL_GAME,
+                  "A=$(ls | wc -l) " + DEL_GAME, "A=" + BT + "echo a; echo b" + BT + " " + DEL_GAME,
+                  "A=$(echo a && echo b) B=x " + DEL_GAME, "env -C $(echo /tmp ) " + DEL_GAME,
+                  "sudo -u $(id -un) " + DEL_GAME, "timeout -s ${S:-KILL x} 5 " + DEL_GAME):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+        self.assertTrue(F("A=$(echo a; echo b) " + DEL_REF)["rm_targets_reference"])
+        # ...inside a carrier too, whose text resolve() rewrote (`A=echo a rm`): fuzz-guard
+        self.assertTrue(F("bash -c " + Q + "A=${X:-echo a} " + DEL_REF + Q)["rm_targets_reference"])
+        # the top level's view runs where the top level runs: a `cd` INSIDE the substitution
+        # (a subshell) moves nothing, and the relative operand is judged from the session cwd
+        self.assertTrue(FC("A=$(cd /x; echo b) " + D + " -rf extensions", GAME)["rm_hits_game"])
+        self.assertTrue(FC("x=$(printf rm); env -C $(echo /tmp ) $x -rf " + DQ + REF + DQ,
+                           _ELSEWHERE)["verb_unresolved"])
+        self.assertEqual(H.verb("env -C $(echo /tmp ) " + D + " x"), D)
+        self.assertEqual(H._raw_words("A=${X:-echo a} " + D), ["A=${X:-echo a}", D])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_spans_and_views_change_nothing_else(self):
+        # an UNCLOSED span (a segment cut inside one) splits at blanks, as tokens() does
+        self.assertEqual(H._raw_words('f=$(find "$P" -name x'), ["f=$(find", '"$P"', "-name", "x"])
+        self.assertTrue(H._span_open("f=$(find") and not H._span_open('A=$(echo "(")'))
+        # the view collapses only a CLOSED, UNQUOTED span holding a SEPARATOR
+        for c in ("A=$(echo a b) x", 'echo "$(a; b)"', "A=$(echo a; b", "echo a; b"):
+            with self.subTest(c=c):
+                self.assertEqual(H._spanning_view(c), c)
+        self.assertEqual(H._spanning_view("A=$(a; b) c"), "A=$(_) c")
+        self.assertEqual(H._spanning_view("A=" + BT + "a | b" + BT + " c"), "A=" + BT + "_" + BT + " c")
+        # ...and a harmless command behind them stays harmless
+        for c in ("A=$(echo a; echo b) ls " + DQ + GAME + DQ, "env -C $(echo /tmp ) ls " + DQ + GAME + DQ,
+                  "A=${X:-echo a} ls " + DQ + GAME + DQ):
+            with self.subTest(c=c):
+                self.assertFalse(F(c)["rm_hits_game"], c)
 
     # --- one falsification twin per clause ---
     def test_TWIN_a_literal_verb_variable_or_an_operand_elsewhere_is_not_this_rule(self):

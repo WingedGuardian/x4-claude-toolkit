@@ -266,7 +266,7 @@ def is_agent_settings(path: str | None) -> bool:
 
 
 def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None,
-                  content: str | None = None) -> dict:
+                  content: str | None = None, edit: dict | None = None, patch: bool = False) -> dict:
     if kind == "shell":
         # `cwd` at the TOP level, where Claude Code and Codex put it: a relative operand is judged
         # from the caller's directory, so `check` and the hooks agree (lane F). The Codex adapter
@@ -277,11 +277,20 @@ def guard_payload(kind: str, shell: str | None, command: str | None, path: str |
         # The file's WHOLE new content (a whole-file write tool, `--content`): exactly a Claude Code
         # Write, so every rule judges it as the reference hooks do (FX-G5 item 10).
         return {"tool_name": "Write", "tool_input": {"file_path": path, "content": content}}
+    if edit is not None:
+        # ONE string replacement (an OpenCode edit: old, new, replace_all), which the settings rule
+        # APPLIES to the file as it is now and judges the result (FX-G6 / reviewer K I5).
+        return {"tool_name": "Write", "tool_input": {"file_path": path, "x4_edit": edit}}
     if command is not None or is_agent_settings(path):
         # The TEXT this write applies (an apply_patch, an OpenCode write/edit), for the
         # settings-file rule (settings_guard.py, user decision 2026-10-05). Not `content`: a
         # patch is not the file's resulting content, and the rule judges the two differently.
-        return {"tool_name": "Write", "tool_input": {"file_path": path, "x4_written": command}}
+        # `x4_patch` only when the CALLER says the text is an apply_patch (FX-G6 / reviewer K M1):
+        # the settings rule gives a patch's own semantics only then, never by sniffing the text.
+        ti = {"file_path": path, "x4_written": command}
+        if patch:
+            ti["x4_patch"] = True
+        return {"tool_name": "Write", "tool_input": ti}
     return {"tool_name": "Write", "tool_input": {"file_path": path, "content": ""}}
 
 
@@ -391,12 +400,13 @@ GUARDS_OFF_NOTE = ("X4 GUARDS OFF (X4_GUARD=off at launch): every guard verdict 
 
 
 def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None,
-                deadline: float | None = None, content: str | None = None) -> dict:
+                deadline: float | None = None, content: str | None = None,
+                edit: dict | None = None, patch: bool = False) -> dict:
     """The verdict, plus spec 5.7's escape hatch: with X4_GUARD exactly "off" the guards turn a
     deny/ask into an advisory naming what it would have been (they read the variable
     themselves), and this says GUARDS OFF on every verdict -- a would-be allow included. An inert
     verdict stays an inert deny: a guard that could not run judged nothing to relax."""
-    v = _verdict(kind, shell, command, path, deadline, content)
+    v = _verdict(kind, shell, command, path, deadline, content, edit, patch)
     if os.environ.get("X4_GUARD") != "off" or v["inert"]:
         return v
     v = dict(v)
@@ -407,7 +417,8 @@ def verdict_for(kind: str, shell: str | None, command: str | None, path: str | N
 
 
 def _verdict(kind: str, shell: str | None, command: str | None, path: str | None,
-             deadline: float | None = None, content: str | None = None) -> dict:
+             deadline: float | None = None, content: str | None = None,
+             edit: dict | None = None, patch: bool = False) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
     are relative). A delete is judged as the stricter of a write and an `rm -rf --` of that path:
     recursive, because the path may be a directory. No protect-bash rule distinguishes it from
@@ -421,7 +432,7 @@ def _verdict(kind: str, shell: str | None, command: str | None, path: str | None
     if kind == "shell":
         return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline, budget)
     path = os.path.abspath(path)
-    parts = [run_guard("protect-files.sh", guard_payload("write", None, command, path, content),
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, command, path, content, edit, patch),
                        deadline, budget)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
@@ -478,6 +489,8 @@ def main(argv=None) -> int:
     c.add_argument("--content", help="write: the file's WHOLE new content, from a tool that writes a "
                    "complete file -- judged exactly as a Claude Code Write. Use --command instead for "
                    "a patch or any partial text")
+    c.add_argument("--patch", action="store_true", help="write/delete: the --command text is an "
+                   "apply_patch (its own semantics: an add-only patch replaces the file)")
     c.add_argument("--path")
     a = ap.parse_args(argv)
     if a.cmd == "conformance":            # only reachable with options before the word
@@ -488,7 +501,9 @@ def main(argv=None) -> int:
         ap.error(f"--kind {a.kind} needs --path")
     if a.content is not None and (a.kind != "write" or a.command is not None):
         ap.error("--content is for --kind write only, and never with --command")
-    v = verdict_for(a.kind, a.shell, a.command, a.path, content=a.content)
+    if a.patch and (a.kind == "shell" or a.command is None):
+        ap.error("--patch is for --kind write/delete with --command (the patch text)")
+    v = verdict_for(a.kind, a.shell, a.command, a.path, content=a.content, patch=a.patch)
     sys.stdout.write(json.dumps(v) + "\n")
     return 0
 

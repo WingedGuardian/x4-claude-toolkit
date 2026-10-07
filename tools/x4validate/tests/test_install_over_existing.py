@@ -835,6 +835,8 @@ def test_the_SOURCE_machines_config_siblings_do_not_travel(installer, tmp_path):
         assert (dest / tpl).is_file(), (
             "%s did not travel -- the skip is too broad and the installer no "
             "longer ships its own template" % tpl)
+
+
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_the_SOURCE_machines_reference_buildid_marker_does_not_travel(installer, tmp_path):
     """FX-G5 / reviewer J2 item 7: `.claude/.reference-buildid` is written by THIS machine's

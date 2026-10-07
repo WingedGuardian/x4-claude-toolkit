@@ -30,6 +30,7 @@ needs_bash = pytest.mark.skipif(not BASH, reason="no Git Bash -- the shell hooks
 
 ON = {"env": {"X4_GUARD": "off"}, "permissions": {"allow": []}}
 OFF = {"env": {"OTHER": "1"}, "permissions": {"allow": []}}
+NL = chr(10)
 
 
 @pytest.fixture
@@ -253,6 +254,22 @@ def test_x4guard_check_content_is_judged_as_the_whole_resulting_file(sandbox):
     r = subprocess.run([sys.executable, str(HOOKS / "x4guard.py"), "check", "--kind", "delete", "--path",
                         str(s), "--content", "{}"], capture_output=True, env=env, timeout=120)
     assert r.returncode == 2
+
+
+def test_patch_semantics_only_when_the_caller_SAYS_it_is_a_patch(sandbox):
+    """FX-G6 / reviewer K M1: the add-only reading (the old file cannot survive) was chosen by
+    SNIFFING the text for `*** Begin Patch` / `*** Add File:`, so any written text shaped like
+    one -- an OpenCode write, a `--command` from another agent -- escaped the check of what the
+    file already holds. Now only an explicit patch (`--patch`, the Codex adapter's patch calls)."""
+    _tmp, _tk, env, s = sandbox
+    s.write_text(json.dumps(ON), encoding="utf-8")
+    add = NL.join(["*** Begin Patch", "*** Add File: .claude/settings.json", "+" + json.dumps(OFF), "*** End Patch"])
+    assert _check(env, "--kind", "write", "--path", str(s), "--command", add) == "deny"
+    # twin: the same text, declared a patch, keeps its add-only reading
+    assert _check(env, "--kind", "write", "--path", str(s), "--command", add, "--patch") == "allow"
+    r = subprocess.run([sys.executable, str(HOOKS / "x4guard.py"), "check", "--kind", "write", "--path",
+                        str(s), "--patch"], capture_output=True, env=env, timeout=120)
+    assert r.returncode == 2                                     # --patch needs the text
 
 
 # --- session-canary -----------------------------------------------------------------------------
