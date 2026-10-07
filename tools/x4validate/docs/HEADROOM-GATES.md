@@ -1,0 +1,62 @@
+# Capped step-1 gates
+
+The 2026-10-07 takeover replaces blanket occupancy limits with the user's shared
+resource-budget headroom policy. The resource tool is external to this repository:
+40% total managed CPU, 8 GiB total managed memory, below-normal priority, at most
+eight workers. Leave 6 GiB available RAM, 8 GiB available commit and 150 GiB free
+on C:. Other output drives keep max(20 GiB, 5%). Estimate overruns warn; sustained
+pressure throttles and blocks new batches; emergency floors stop only the job tree.
+The resource tool's `HEADROOM.md` specifies the sample windows and emergency floors.
+
+From the toolkit root, using the installed resource-budget path as RB:
+
+```
+python RB/rb.py run --name x4-step1 --cpu 40 --ram 4 --disk C:/=10 --wait-until-fits 60 -- uv run --directory tools/x4validate python -B -u ../../scripts/run-release-gates.py --workers 8 --out REPORT_DIRECTORY
+```
+
+Use an external, new report directory. Add `--resume` to the step-1 command to
+reuse completed stages only when source bytes, SHA, interpreter, installed input
+fingerprints, relevant private configuration hashes, resource policy and deployed
+hook bytes still match. Evidence file hashes must also match. Secret values are
+not persisted. This runs the ten preliminary gates, hook mutation coverage and
+pytest, stopping on the first unexpected failure. It does not deploy or run steps
+2–5. The single real deployment-parity failure can be recorded as **pending**,
+with its nonzero exit retained; it is never reported as a clean pass.
+
+Hook verification defaults to serial. `verify-hook-tests.py --workers N --report FILE`
+gives each mutation/predicate trial its own copy and full hook-suite execution.
+Parallel dispatch requires the resource monitor heartbeat. `--sample N` is only a
+benchmark: it always returns 3 and cannot pass a release gate. Reports name every
+trial's return code, failed test set and test count, plus input byte hashes.
+
+Pytest's `scripts/run-pytest-batches.py` keeps unknown modules exclusive in one
+process. The reviewed manifest initially enables seven module batches and function
+batches for `test_install_over_existing.py`. Exact module and shared-helper hashes
+pin those reviews; changed inputs fall back to exclusive execution. Each batch has
+normal system-temp scratch space, separate from its durable report directory:
+guard fixtures under `.claude/backups` would inherit that path's policy exemption.
+`--serial` runs the original monolithic suite. `--compare A/results.json B/results.json`
+compares every collected node, phase outcome, xfail, skip reason and collection skip,
+refusing changed source fingerprints, missing tests and duplicate tests.
+
+MEASURED sample, 2026-10-07: the same 16 of 261 hook trials took 238.5 / 122.2 /
+71.5 / 55.6 seconds with 1 / 2 / 4 / 8 workers. All 16 trial outcomes matched.
+Eight is the smallest tested count within 10% of the fastest sample. Peak job memory
+was 700 MiB at eight workers. Full-suite equivalence and end-to-end speed are separate
+acceptance checks; these sample timings do not prove either. The resource suite
+passed all 99 tests, including bounded CPU and memory-cap probes.
+
+## Takeover findings
+
+READ git history: the stale verb-resolution hook mutant followed FX-G7 (`fc2d357`),
+but the missing settings rule row originated earlier (`dbaaf7d`) and the adapter
+deadline anchor changed with result-aware settings checks (`d3f53d5`). This is not
+one FX-G7 defect. The nine register failures were stale/missing test citations;
+their existing tests are now named, with no baseline expansion. F253 records the
+Unicode source-line checker defect. No production X4 XML or profile was changed.
+
+UNMEASURED: Codex host fail-open behavior was not re-probed in this takeover.
+Resource-job one-second CPU accounting peaks remain unsuitable as evidence of
+machine saturation; the watchdog uses independent machine CPU samples and now
+records their peak separately. Historical host measurements and cost estimates
+must retain those qualifications.

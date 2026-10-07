@@ -331,6 +331,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F250 | A `cd` whose target has several possible values (an unassigned `${V:+w}`) was judged by ONE of them -- the first landing under ANY root -- so from the toolkit or the game folder `cd "${NOPE:+x}<reference>" && rm -rf libraries` took the relative `x<reference>` (joined under the session folder) and the rm was an advisory | **DEFECT (measured)** · IN-ARC (regression of FX-G6 / F241, e39853f deny -> 8ed563f advise) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | regression corpus #397: 1 of 432 replayed rows; FX-G6's own allk.txt row | `cwd_lanes`: one lane per value, up to 16 lanes; past 16 a lane takes the value under a configured root (the F241 rule). Cost: `cd "${NOPE:+x}<plain folder>" && rm -rf b` from an X4 folder is now an ADVISORY (the set branch lands under it) |
 | F251 | A work tree named by an ASSIGNMENT in another segment (`export GIT_WORK_TREE=<X4 folder>; git clean -fdx`, `declare -x`, `GIT_DIR=`) reached no wipe rule: `_git_destructive` reads its own segment only | **DEFECT (measured)** · PRE-ARC (allow at e39853f too) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 5 of 5 roots ALLOW from a folder outside every root, in a 3 cwd x 6 root x 12 form matrix where every other spelling ASKS | named ask only (never the bare deny's per-segment pairs), so from an X4 folder it stays the deny; order-blind; PowerShell `$env:GIT_WORK_TREE` not probed |
 | F252 | `git clean`'s dry run was `-n` or a prefix of `--dry-run` ANYWHERE: `-fdx -n --no-dry-run`, `-n --no-d`, `-e -n`, `--exclude -n`, `--e -n`, `-fe -n` delete (MEASURED, git 2.48.1) and were allowed | **DEFECT (measured)** · PRE-ARC (allow at e39853f) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 6 of 6 spellings x 2 forms allowed, now ask (`-C`) / deny (bare) | the last of `-n`/`--dry-run`/`--no-dry-run` wins; `-e`/`--exclude`/`--pathspec-from-file` consume a value; `--` ends options; a long prefix counts only when unambiguous among git clean's 14 long spellings. A clustered `-fdxn` is still NOT read as a dry run (false positive only) |
+| F253 | Unicode line/paragraph separators shifted AST-indexed justification checks | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the silent-swallow checker | 2 of 2 marker readers in that checker used Unicode-aware splitting | Split on LF after universal-newline reading; marked/unmarked twins |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9362,7 +9363,7 @@ Residual (corrected by reviewer K, MEASURED): not false-positive only -- the fix
 as the script, so `bash - <(echo rm -rf <game>)`, `sh - <(...)` and `bash -x - <(...)` went deny ->
 ALLOW (F242), and `bash -n +n <(...)` stayed allowed (F243); `bash -o noexec <(...)` is judged.
 **RE-DERIVED BY:**
-`TestH7H8TextPipedIntoAShell.test_only_the_shells_OWN_options_and_their_values_are_stepped_over`.
+`.claude/hooks/test_hook_facts.py`, `TestH7H8TextPipedIntoAShell.test_only_the_shells_OWN_options_and_their_values_are_stepped_over`.
 
 ## F233 — a quoted-looking `cd` concatenation was taken as literal · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
 
@@ -9380,7 +9381,7 @@ root -- closed by F245. **RE-DERIVED BY:** `tests/test_patch_paths.py`
 clean.requireForce false && git -C <game> clean -dx` both deleted with no `-f` and were allowed.
 **Fix:** `-c include.*`/`includeIf.*`, any `--config-env`, and an in-command `git ... config ...`
 naming requireForce or an include make the clean forced (the rule asks). Order-blind by design.
-**RE-DERIVED BY:** `TestJ2GitCleanForcedByConfigIncludeOrCommand` (twins: `-c core.x`,
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py`, `TestJ2GitCleanForcedByConfigIncludeOrCommand` (twins: `-c core.x`,
 `-c user.include`, `git log --grep requireForce`, `echo requireForce`).
 
 ## F235 — the alternate word of an unassigned variable was dropped · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
@@ -9391,7 +9392,7 @@ as UNSET, so `${PATH:+$X4_GAME}` resolved to "" and `rm -rf "${PATH:+$X4_GAME}"`
 (an assigned empty value still gives "" for `:+`). **This fix lost the empty branch** (reviewer K
 C1, MEASURED): judging the alternate word ALONE allowed `rm -rf "${NOPE:+zz}<reference>"`,
 `"${NOPE+zz}<reference>"` and `"${NOPE:+./junk}<game>"`, denied at 44c2d00. **Restored by F241**:
-every value is judged. **RE-DERIVED BY:** `TestJ2AlternateOfAnUnknownVariable`,
+every value is judged. **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py`, `TestJ2AlternateOfAnUnknownVariable`,
 `TestK_C1EveryValueOfAnUnknownVariable`.
 
 ## F236 — `.`/`..` components and `::$DATA` in `X4_CONFIG` · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
@@ -9410,13 +9411,13 @@ written in both halves; what each half reads for it is not measured. **RE-DERIVE
 **Finding (reviewer J2 item 7).** READ: `.claude/.reference-buildid` was in neither installer's
 lists (git-ignored, so only a non-git source carried it). MEASURED: both installers copied it from
 a synthetic unpacked source. **Fix:** keep-local in `install.sh` and `install.ps1`. **RE-DERIVED BY:**
-`test_the_SOURCE_machines_reference_buildid_marker_does_not_travel[sh|ps1]` (twin: the destination's
+`tests/test_install_over_existing.py`, `test_the_SOURCE_machines_reference_buildid_marker_does_not_travel[sh|ps1]` (twin: the destination's
 own marker survives a reinstall, which a prune-list fix would fail).
 
 ## F238 — verify-hook-tests pooled same-named test sources · **DEFECT (read)** · confidence 90% · ✅ FIXED 2026-10-06
 
 **Finding (reviewer J2 item 8).** After 141bb8c the silent? column looked sources up by method
-name while failures and targets are `Class.method`; `test_sources` concatenated same-named tests'
+name while failures and targets are `Class.method`; `vht.test_sources` concatenated same-named tests'
 sources, so a failure in one class was credited with what its namesake names. **Fix:** keyed
 `Class.method`, looked up via `credited()`. **RE-DERIVED BY:** `tests/test_verify_hook_tests.py`.
 
@@ -9479,7 +9480,8 @@ its twin (`bash -n -- +n <(...)`: the script is the file `+n`).
 **Finding (reviewer K I3).** `bash -n +n <(echo rm -rf <game>)` executes the script; any `-n` among
 the options exempted it. **Fix:** the LAST n-toggle decides (`-n`/`+n`, clustered `-xn`/`+xn`, and
 `+o noexec` turning it off). `-o noexec` is not exempted (false positive only, as before).
-**RE-DERIVED BY:** the same two tests as F242.
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py`,
+`test_a_lone_dash_ends_the_options_and_plus_n_cancels_minus_n` and its twin (as F242).
 
 ## F244 — a word holding a span with a blank or a separator split into a false command name · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
 
@@ -9559,7 +9561,7 @@ per value (each with its own pushd stack); facts() judges every segment once per
 seeded and unseeded walks lane for lane (lanes split per VALUE, which does not depend on the
 base). Bounded at 16 lanes; past it a lane takes the root-landing value. Probed: `cd`, `pushd`,
 `cd` in `bash -c` and `eval`, a second relative `cd`, a redirect write, from the toolkit, the game
-and an outside folder. **RE-DERIVED BY:** `test_hook_facts.py` `TestG7EveryCdValueIsALane`.
+and an outside folder. **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` `TestG7EveryCdValueIsALane`.
 
 ## F251 — a git work tree named through the environment by another segment · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
 
@@ -9573,7 +9575,7 @@ toolkit (corpus #208-#212, #306) for the same reason -- it never read the work t
 session folder; from an outside folder it ALLOWED them, and from the toolkit it denied
 `--work-tree=<plain folder>` too. 8ed563f's ASK is the `-C` form's verdict. **Fix:** an assigned
 `GIT_WORK_TREE` / `GIT_DIR` (parent) feeds the named-wipe ASK of every wiping git segment, never the
-bare deny's pairs. **RE-DERIVED BY:** `TestG7GitWorkTreeNamedByAnAssignment`.
+bare deny's pairs. **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` `TestG7GitWorkTreeNamedByAnAssignment`.
 
 ## F252 — `git clean` dry run read from any `-n` · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
 
@@ -9582,4 +9584,19 @@ bare deny's pairs. **RE-DERIVED BY:** `TestG7GitWorkTreeNamedByAnAssignment`.
 refused as ambiguous. The guard returned "dry run" for any `-n` or prefix of `--dry-run`. **Fix:**
 `_git_clean_dry` -- the last toggle wins, value options consume their value, `--` ends options, and
 `_git_clean_long` accepts a prefix only when it names exactly one of git clean's long options
-(with their `--no-` forms). **RE-DERIVED BY:** `TestG7GitCleanDryRunIsTheLastWord`.
+(with their `--no-` forms). **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` `TestG7GitCleanDryRunIsTheLastWord`.
+
+## F253 — Unicode separators shift AST marker lookup · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-07
+
+MEASURED: the pre-fix silent-swallow checker accused `_paths.py:444`, whose handler already
+carried its justification. `str.splitlines()` also splits U+2028/U+2029 in a preceding docstring;
+Python AST line numbers do not. Both AST-indexed marker readers in
+`tests/test_no_silent_swallow.py` now split on LF after `read_text` newline normalization.
+No production handler or exception policy changed. RE-DERIVED BY:
+`tests/test_no_silent_swallow.py` `test_unicode_separators_do_not_shift_ast_marker_lines`
+and `test_unicode_separators_do_not_shift_control_flow_markers`: marked and unmarked twins.
+
+READ, open follow-up: `test_no_loose_only_reference_walk.py`, `test_no_packed_only_scan.py`,
+and `test_mod_scope_is_explicit.py` also index splitlines output by AST line number.
+Their current findings were not shown to be wrong in this takeover; this closure covers
+the two silent-swallow readers, not every source-location consumer.

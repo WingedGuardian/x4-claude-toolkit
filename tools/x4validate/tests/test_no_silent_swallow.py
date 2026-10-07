@@ -68,7 +68,7 @@ def _offenders(package: Path = PACKAGE) -> list[str]:
     out = []
     for path in sorted(package.glob("*.py")):
         source = path.read_text(encoding="utf-8")
-        lines = source.splitlines()
+        lines = source.split("\n")  # AST lines count LF, not Unicode paragraph/line separators.
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.ExceptHandler):
                 continue
@@ -133,6 +133,19 @@ def test_the_marker_silences_it(tmp_path):
     assert _offenders(fake) == []
 
 
+def test_unicode_separators_do_not_shift_ast_marker_lines(tmp_path):
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    p = fake / "_ok.py"
+    source = ('"""separators: \u2028\u2029"""\n'
+              'def f():\n    try:\n        g()\n'
+              '    except OSError:  # silent-ok: failure reported by caller\n        return None\n')
+    p.write_text(source, encoding="utf-8")
+    assert _offenders(fake) == []
+    p.write_text(source.replace("silent-ok:", "explanation:"), encoding="utf-8")
+    assert _offenders(fake) == ["_ok.py:5"]
+
+
 # --- second shape of the same class: control-flow swallow --------------------
 # The guard above only inspects `except` handlers. The defect that dropped 858
 # installed-mod ops was not in a handler at all::
@@ -152,7 +165,7 @@ def _control_flow_swallows(package: Path = PACKAGE) -> list[str]:
     out = []
     path = package / "_merge.py"
     source = path.read_text(encoding="utf-8")
-    lines = source.splitlines()
+    lines = source.split("\n")  # Match Python AST line numbers, as in _offenders.
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.FunctionDef) or node.name not in MUTATORS:
             continue
@@ -187,3 +200,14 @@ def test_the_control_flow_guard_actually_detects_one(tmp_path):
         "def _do_replace(t):\n    for x in t:\n        if x is None:\n            continue\n",
         encoding="utf-8")
     assert _control_flow_swallows(fake) == ["_merge.py:3 in _do_replace()"]
+
+
+def test_unicode_separators_do_not_shift_control_flow_markers(tmp_path):
+    p=tmp_path/"_merge.py"
+    source=('"""separators: \u2028\u2029"""\n'
+            'def _do_replace(t):\n    for x in t:\n'
+            '        if x is None:  # silent-ok: test marker\n            continue\n')
+    p.write_text(source,encoding="utf-8")
+    assert _control_flow_swallows(tmp_path)==[]
+    p.write_text(source.replace("silent-ok:","explanation:"),encoding="utf-8")
+    assert _control_flow_swallows(tmp_path)==["_merge.py:4 in _do_replace()"]

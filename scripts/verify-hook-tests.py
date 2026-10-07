@@ -32,6 +32,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import argparse
+import json
+import hashlib
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 #: A literal newline, built from its byte value. Multi-line mutant
@@ -435,8 +440,8 @@ MUTANTS = [
      '"writes_reference": False,',
      "test_a_truncating_redirect_into_reference_fires"),
     ("a verb carried in a variable is resolved before the rules see it",
-     "        seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]",
-     "        seg_cwd += [(s, d) for s, d in tracked]",
+     "            rs = resolve_verb(s, assigns)",
+     "            rs = s",
      "test_rm_through_a_variable_still_hits_the_game_root"),
     ("carriers are followed more than one level",
      "    for _ in range(_MAX_CARRIER_DEPTH):", "    for _ in range(0):",
@@ -1016,7 +1021,41 @@ def qualify(tgt: str, idx: dict):
     return None, f"{tgt}: AMBIGUOUS, defined in {', '.join(owners)} -- write Class.{tgt}"
 
 
-def main() -> int:
+def wait_for_dispatch():
+    """Cooperate with rb; stale/unreadable telemetry is an error, never permission."""
+    path = os.environ.get("RB_PRESSURE_FILE")
+    while path:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+        if time.time() - state["updated"] > 30:
+            raise RuntimeError("resource monitor heartbeat is stale")
+        if not state["blocked"]:
+            return
+        time.sleep(1)
+
+
+def evaluate_source(source):
+    wait_for_dispatch()
+    with tempfile.TemporaryDirectory(prefix="vht-case-") as td:
+        work = Path(td)
+        for f in FILES:
+            shutil.copy2(HOOKS / f, work / f)
+        (work / "hook_facts.py").write_text(source, encoding="utf-8", newline="")
+        started = time.monotonic()
+        rc, failed, ran = run(work)
+        return {"rc": rc, "failed": sorted(failed), "ran": ran,
+                "seconds": time.monotonic()-started}
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workers", type=int, choices=range(1,9), default=1)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--sample", type=int, help="benchmark N evenly spaced trials; exit 3, never a release pass")
+    args = parser.parse_args(argv)
+    def inputs():
+        return {str(p.relative_to(REPO)):hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in [Path(__file__).resolve(),*[HOOKS/f for f in FILES]]}
+    fingerprint=inputs()
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         for f in FILES:
@@ -1065,17 +1104,63 @@ def main() -> int:
                   "in more than one class)", file=sys.stderr)
             return 2
 
+        stale = [(label, pristine.count(old)) for label, old, _, _ in MUTANTS
+                 if pristine.count(old) != 1]
+        if stale:
+            for label, count in stale:
+                print(f"{label}: DID NOT APPLY ({count} matches) -- stale mutant")
+            print(f"REFUSING: {len(stale)} stale anchor(s), before expensive trials")
+            return 1
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vht_pristine", target)
+        H = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(H)
+        keys = sorted(k for k,v in H.facts({"tool_input":{"command":"echo x"}}, {}).items()
+                      if isinstance(v,bool) and k not in NOT_A_RULE)
+        if not keys:
+            print("REFUSING: empty predicate population")
+            return 2
+        cases = [("mutation:"+str(i), pristine.replace(old,new))
+                 for i, (_,old,new,_) in enumerate(MUTANTS)]
+        cases += [("predicate:"+k+":"+v, pristine+SHIM.format(key=k,val=v))
+                  for k in keys for v in ("False","True")]
+        population = len(cases)
+        if args.sample is not None:
+            if not 1 <= args.sample <= population:
+                parser.error("--sample must be between 1 and the trial population")
+            cases = [cases[i*population//args.sample] for i in range(args.sample)]
+        if args.workers > 1 and not os.environ.get("RB_PRESSURE_FILE"):
+            print("REFUSING: parallel trials require rb.py run")
+            return 2
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            values = []
+            for result in pool.map(evaluate_source, [s for _,s in cases]):
+                values.append(result)
+                print(f"trial {len(values)}/{len(cases)} completed", flush=True)
+        results = dict(zip([key for key,_ in cases], values))
+        if inputs()!=fingerprint:
+            raise RuntimeError("hook verification inputs changed during run")
+        if args.report:
+            args.report.write_text(json.dumps({"inputs":fingerprint,"python":sys.version,
+                                              "workers":args.workers,"population":population,
+                                              "sample":args.sample,"cases":results},indent=2),
+                                   encoding="utf-8")
+        if args.sample is not None:
+            print(f"BENCHMARK ONLY: {len(cases)} of {population} trials; no release verdict")
+            return 3
+
         bad = 0
         print(f"{'MUTATION':<42} {'target test':<12} verdict")
         print("-" * 78)
-        for label, old, new, tgt in MUTANTS:
+        for i, (label, old, new, tgt) in enumerate(MUTANTS):
             if pristine.count(old) != 1:
                 print(f"{label:<42} {'-':<12} *** DID NOT APPLY "
                       f"({pristine.count(old)} matches) -- the mutant is stale ***")
                 bad += 1
                 continue
             target.write_text(pristine.replace(old, new), encoding="utf-8", newline="")
-            rc, failed, ran = run(work)
+            result = results["mutation:"+str(i)]
+            rc, failed, ran = result["rc"], set(result["failed"]), result["ran"]
             if ran < 20:
                 print(f"{label:<42} {'BROKE':<12} *** broke the suite, proves nothing ***")
                 bad += 1
@@ -1115,7 +1200,8 @@ def main() -> int:
             for val in ("False", "True"):
                 target.write_text(pristine + SHIM.format(key=k, val=val),
                                   encoding="utf-8", newline="")
-                _rc, f, r = run(work)
+                result = results["predicate:"+k+":"+val]
+                _rc, f, r = result["rc"], set(result["failed"]), result["ran"]
                 if val == "True":
                     # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
                     # `f` holds "Class.method" (FX-G3), and so does srcs (FX-G5 / J2 item 8): a

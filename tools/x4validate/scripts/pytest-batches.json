@@ -1,0 +1,55 @@
+{
+  "__helpers__": {
+    "conftest.py": "a55fb03a8f1ccb3d0aeaee61aec895c491b32b861c967af88eec3fe537a53e3e",
+    "_layout.py": "c36f97c9dd43ccc249b93f4fe32efd60d3c1505bb0b00e9aa8ec95246ef5c6c7",
+    "codex_testlib.py": "80dd0366c824ceb655b5e2eb4a6af7d155d177cc28668b59ec0610f44a587561"
+  },
+  "test_xpath.py": {
+    "sha256": "9c1a87b8911dc69f527a2a50f74d476bac7722aafe9fe304934eb99ce0d7327d",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_registries.py": {
+    "sha256": "5ff2be39e7709e6e29b20bb10d0454be41ee7c8090955f72fa72bfd13ffd1a9b",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_xref.py": {
+    "sha256": "24f20a26c9bbb11685e2841a2e7217005d510c7918ccc621d1d21597146c43e4",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_script_registry.py": {
+    "sha256": "68c9d682915b2ef01a6459c6d74819acdac3ece8ecf3c6322a52c9528aa87410",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_tier_b_trees.py": {
+    "sha256": "8a47257f280d0c11af20cfad03478ada487380acd525090835edb9215efbf0d7",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_no_unreachable_code.py": {
+    "sha256": "9e13c18be0fc2688e10dd6a38bbb0a96eedb5e97bc227c62ce4dd86f5f6f89da",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_xref_empty_name.py": {
+    "sha256": "663a5b0fa8dd142eda6dde75ef8dcf9c09f51006dda8d452b296f6133a9d74b5",
+    "mode": "parallel",
+    "reviewed": true,
+    "reason": "READ: in-memory checks, read-only source/reference, or tmp_path outputs; no shared writes or timing assertions"
+  },
+  "test_install_over_existing.py": {
+    "sha256": "1a4f23941838bb63fabe6b3fc2e5410b38fec284b4505c734f813f57178c3c68",
+    "mode": "functions",
+    "reviewed": true,
+    "reason": "READ: installer destinations confined to per-test tmp_path, UUID registry keys with per-process cleanup; function fixtures, no timing thresholds"
+  }
+}
