@@ -2987,8 +2987,33 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False, roots: dict | None
     it the directory after `cd "$X4_REFERENCE"` was unknowable and every later relative
     operand reached no rule.
     """
-    out, cwd, stack = [], base, []
-    #: True while the directory in force is still the SESSION's (the seed, or a resolved
+    return [(seg, d) for seg, ds in cwd_lanes(cmd, base, seeded, roots)
+            for d in dict.fromkeys(ds)]
+
+
+#: How many directories cwd_lanes() keeps in force at once (FX-G7). Each `cd` whose target
+#: has several values (an unassigned variable: resolve_variants) splits every lane; past
+#: this bound a lane takes the value that lands under a configured root instead (the
+#: FX-G6 single choice) -- never silently the plain resolve.
+_MAX_CD_LANES = 16
+
+
+def cwd_lanes(cmd: str, base: str = "", seeded: bool = False, roots: dict | None = None) -> list:
+    """[(segment, [every directory that may be in force FOR it])], in command order --
+    cwd_track()'s model with one LANE per possible directory (FX-G7, corpus #397).
+
+    FX-G6 judged a `cd` with several possible targets by ONE of them: the first that landed
+    under any configured root. MEASURED: from the toolkit, `cd "${NOPE:+x}<reference>" &&
+    rm -rf libraries` took `x<reference>` -- RELATIVE, so joined under the toolkit, which is
+    a root -- and the rm was an advisory where e39853f denied (NOPE unset lands in
+    reference). One chosen value is the wrong shape whatever the choice rule, because the
+    strictest directory depends on the operand judged against it. So every value is kept:
+    lane j of every segment is one consistent history of `cd`s, and a rule judging a
+    relative operand against every lane takes the strictest verdict (facts() ORs them).
+    Lanes are split per candidate VALUE, which does not depend on `base`, so the seeded and
+    unseeded walks of one command have the same lanes in the same order."""
+    #: Each lane: [cwd, from_seed, pushd stack].
+    #: from_seed is True while the directory in force is still the SESSION's (the seed, or a resolved
     #: relative `cd` from it) -- no absolute `cd` has said where the shell is. Lane F,
     #: MEASURED over the history replay: from a seeded game root, `cd "$X4_TOOLKIT" && sed
     #: -i ... scripts/x` joined the unresolved target ONTO the game root (the sticky join
@@ -3004,21 +3029,15 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False, roots: dict | None
     #: command -- `cd "$FZ" && rm -rf extensions` walked through a hard block on that.
     #: Every other rule resolves before matching; this one did not.
     assigns = assignments(cmd)
-    for seg in segments(cmd):
-        out.append((seg, cwd))
-        v = verb(seg)
+
+    def step(seg, v, lane, tgt):
+        """One lane through one segment; `tgt` is the value its cd/pushd takes in this lane."""
+        cwd, from_seed, stack = lane[0], lane[1], list(lane[2])
         if v in DIR_VERBS:
             ops = _operands(seg)
             if ops:
                 if v == "pushd":
                     stack.append((cwd, from_seed))
-                # One directory, several possible values (FX-G6 / reviewer K C1): the
-                # strictest -- the first that lands under a configured root -- else the
-                # plain resolve(), so `cd "${NOPE:+x}<reference>"` is <reference>.
-                cands = [subst_root_var(r, roots) for r in resolve_variants(ops[0], assigns)]
-                tgt = next((c for c in cands
-                            if any(rt and under(join_cwd(cwd, c), rt)
-                                   for rt in (roots or {}).values())), cands[0])
                 # `cd -` returns somewhere this hook cannot know; refuse to guess.
                 if ops[0] == "-":
                     cwd = ""
@@ -3035,6 +3054,30 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False, roots: dict | None
                     cwd = join_cwd(cwd, tgt)
         elif v == "popd" and stack:
             cwd, from_seed = stack.pop()
+        return (cwd, from_seed, stack)
+
+    out, lanes = [], [(base, from_seed, [])]
+    for seg in segments(cmd):
+        out.append((seg, [ln[0] for ln in lanes]))
+        v = verb(seg)
+        ops = _operands(seg) if v in DIR_VERBS else []
+        if not ops:
+            lanes = [step(seg, v, ln, "") for ln in lanes]
+            continue
+        # One directory, several possible values (FX-G6 / reviewer K C1): `cd
+        # "${NOPE:+x}<reference>"` is <reference> when NOPE is unset and x<reference> when
+        # set -- so EVERY value gets its own lane (FX-G7).
+        cands = [subst_root_var(r, roots) for r in resolve_variants(ops[0], assigns)]
+        if len(lanes) * len(cands) <= _MAX_CD_LANES:
+            lanes = [step(seg, v, ln, c) for ln in lanes for c in cands]
+        else:
+            # Past the bound: one value per lane, the first landing under a configured
+            # root, else the plain resolve() (the FX-G6 rule).
+            lanes = [step(seg, v, ln, next((c for c in cands
+                                            if any(rt and under(join_cwd(ln[0], c), rt)
+                                                   for rt in (roots or {}).values())),
+                                           cands[0]))
+                     for ln in lanes]
     return out
 
 
@@ -3156,6 +3199,12 @@ def _git_config_writes(seg: str) -> bool:
     return next((a for a in args if not a.startswith("-")), "") not in ("get", "list")
 
 
+def _gitdir_parent(v):
+    """The folder holding a `--git-dir` / `GIT_DIR` repository (`<x>/.git` -> `<x>`)."""
+    v = v.rstrip("/" + chr(92))
+    return v[:-5] if v.lower().endswith(".git") and v[-5:-4] in ("/", chr(92)) else v
+
+
 def _git_destructive(seg, wanted, deep=False):
     r"""The directory a destructive git subcommand would act on, or [].
 
@@ -3202,10 +3251,6 @@ def _git_destructive(seg, wanted, deep=False):
     # there; reading it as a target can only add an ask). And `-c clean.requireForce=false`
     # makes a clean with NO -f delete (MEASURED by the reviewer), so it counts as forced.
     worktree, gitdirs, forced = None, [], False
-
-    def _gitdir_parent(v):
-        v = v.rstrip("/" + chr(92))
-        return v[:-5] if v.lower().endswith(".git") and v[-5:-4] in ("/", chr(92)) else v
 
     for i, t in enumerate(toks):
         if t in _GIT_VALUE_OPTS and i + 1 < len(toks):
@@ -3303,7 +3348,7 @@ def _git_destructive(seg, wanted, deep=False):
     rest = toks[si + 1:]
     if sub == "clean":
         # -f is required by git itself before it deletes anything; -n/--dry-run wins.
-        if any(t == "-n" or _git_long(t, "--dry-run") for t in rest):
+        if _git_clean_dry(rest):
             return []
         hot = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:]
                   for t in rest) or any(_git_long(t, "--force") for t in rest) or forced
@@ -3339,6 +3384,56 @@ def _git_long(tok, opt, least=3):
     the name."""
     name = tok.split("=", 1)[0]
     return len(name) >= least and name.startswith("--") and opt.startswith(name)
+
+
+#: git clean's long options (git builtin/clean.c), each also negatable as `--no-<name>`.
+#: An abbreviation names an option only when it prefixes exactly ONE of these (FX-G7).
+#: MEASURED (git 2.48.1): `--n` is refused as ambiguous (--no-force / --no-interactive).
+_GIT_CLEAN_LONG = ("--quiet", "--dry-run", "--force", "--interactive", "--exclude",
+                   "--pathspec-from-file", "--pathspec-file-nul")
+_GIT_CLEAN_LONG_ALL = _GIT_CLEAN_LONG + tuple("--no-" + o[2:] for o in _GIT_CLEAN_LONG)
+
+
+def _git_clean_long(tok):
+    """The git clean long option `tok` spells -- exactly, or as a prefix of exactly one of
+    `_GIT_CLEAN_LONG_ALL` -- else None (not an option, or ambiguous: git then refuses)."""
+    name = tok.split("=", 1)[0]
+    if len(name) < 3 or not name.startswith("--"):
+        return None
+    if name in _GIT_CLEAN_LONG_ALL:
+        return name
+    hits = [o for o in _GIT_CLEAN_LONG_ALL if o.startswith(name)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _git_clean_dry(rest):
+    """Does this `git clean` only PRINT (FX-G7)? The LAST of `-n` / `--dry-run` /
+    `--no-dry-run` wins, any unambiguous abbreviation counting (`--d`, `--dry`, `--no-d`).
+    MEASURED in a scratch repo (git 2.48.1): `clean -fdx -n --no-dry-run`, `-n --no-d`,
+    `-e -n`, `--exclude -n` and `--e -n` each DELETED, while the guard read every one as a
+    dry run -- a `-n` that is the VALUE of -e/--exclude is a pattern, and a later
+    `--no-dry-run` undoes an earlier `-n`. `--` ends the options."""
+    dry, skip = False, False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if t == "--":
+            break
+        if t == "-n":
+            dry = True
+        elif t.startswith("--"):
+            o = _git_clean_long(t)
+            if o == "--dry-run":
+                dry = True
+            elif o == "--no-dry-run":
+                dry = False
+            elif o in ("--exclude", "--pathspec-from-file") and "=" not in t:
+                skip = True
+        elif t.startswith("-") and len(t) > 1:
+            # `-e <pattern>`, also last in a cluster (`-fe -n`); `-epat` carries its own.
+            skip = t.find("e", 1) == len(t) - 1
+    return dry
 
 
 def _stash_removes_untracked(rest, deep):
@@ -4719,13 +4814,21 @@ def facts(payload: dict, roots: dict) -> dict:
                 for c_ in all_cmds for s in segments(c_))
     for i_, c in enumerate(all_cmds):
         top = i_ == 0 or c == top_view
-        tracked = cwd_track(c, base if (top or not moves) else "", seeded=True, roots=roots)
-        seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]
-        # The segment BEFORE each one in the same carried command: what feeds an xargs.
-        seg_prev += [None] + [s for s, _d in tracked][:-1] if tracked else []
+        tracked = cwd_lanes(c, base if (top or not moves) else "", seeded=True, roots=roots)
         # The directory each segment had BEFORE lane F (no session seed), for the two
         # rules whose verdict is an ASK outside the profile -- see `gitwipe_t` below.
-        unseeded += [d for _s, d in cwd_track(c, roots=roots)]
+        # Lane j of one walk is lane j of the other (cwd_lanes splits per VALUE, not per
+        # directory), so a segment is judged once per (seeded, unseeded) lane pair (FX-G7).
+        bare = cwd_lanes(c, roots=roots)
+        for k, (s, ds) in enumerate(tracked):
+            uds = bare[k][1] if k < len(bare) else [""]
+            rs = resolve_verb(s, assigns)
+            # The segment BEFORE each one in the same carried command: what feeds an xargs.
+            prev = tracked[k - 1][0] if k else None
+            for d, ud in dict.fromkeys(zip(ds, uds if len(uds) == len(ds) else uds[:1] * len(ds))):
+                seg_cwd.append((rs, d))
+                seg_prev.append(prev)
+                unseeded.append(ud)
     # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
     # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
     # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
@@ -4880,6 +4983,17 @@ def facts(payload: dict, roots: dict) -> dict:
         # approval fatigue). MEASURED in the replay: 1 historical row, a probe harness.
         # The rule keeps exactly its pre-lane reach: an explicit `cd <root>` or `git -C`.
         gitwipe_t += prep(git_wipes_worktree_targets(s), c_old, c_old)
+        # FX-G7: a work tree named by an ASSIGNMENT in another segment (`export
+        # GIT_WORK_TREE=<game>; git clean -fdx`) reaches git through the environment, and
+        # _git_destructive reads only this segment's tokens. MEASURED: from a folder outside
+        # every root that was ALLOW (old and new) where every other spelling of the same work
+        # tree asks. Named-only (it feeds this ask, never the pairs below), so a bare wipe
+        # from an X4 directory keeps its deny.
+        if git_wipes_worktree_targets(s):
+            gitwipe_t += prep([_gitdir_parent(v_) if k_ == "GIT_DIR" else v_
+                               for k_, v_ in assigns.items()
+                               if k_ in ("GIT_WORK_TREE", "GIT_DIR") and isinstance(v_, str)],
+                              c_old, c_old)
         # ...and SEEDED for J-Q1's deny: the same wipe judged where the session runs. Its
         # verdict is a deny with a reason, which reaches the agent and never the user.
         # PER SEGMENT (R2-F5): (this segment's named form, its seeded form), so a folder
