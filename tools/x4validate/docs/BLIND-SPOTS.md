@@ -328,6 +328,9 @@ memory or from another session -- a remembered id was stale within a day here.
 | F247 | The OpenCode adapter judged an `edit` of a Claude Code settings file on its NEW TEXT only, so two innocent edits (`"X4_GUA": "x"`, then `A": "x"` -> `ARD": "off"`) built `X4_GUARD=off` | **DEFECT (measured)** · IN-ARC (F193, F220) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I5; 1 of 1 | the edit is APPLIED to the file as read and the result judged; an edit that does not apply here is refused when its text could form the key wherever it lands (fail closed); everything the text reading refused stays refused (a file already naming the key) |
 | F248 | The settings rule gave a text apply_patch semantics (the add-only "replaces the file" reading) by SNIFFING it for `*** Begin Patch` / `*** Add File:`, whoever sent it | **DEFECT (read)** · IN-ARC (F239) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K M1 | only an explicit patch: the Codex adapter's patch calls, `x4guard check --patch` |
 | F249 | `X4_CONFIG` = `x4-paths.env::$DATA/.`, `::$DATA::$DATA` or `::$DATA ` (Windows): Python read the file, the guards read none | **DEFECT (measured)** · IN-ARC (F236 residual) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K M2; 3 of 16 probe spellings disagreed, now 0 of 16 | any `::` beyond exactly one trailing `::$DATA` names no config in `_paths` and `x4doctor`; bash already found none (its `-f`), so no bash change |
+| F250 | A `cd` whose target has several possible values (an unassigned `${V:+w}`) was judged by ONE of them -- the first landing under ANY root -- so from the toolkit or the game folder `cd "${NOPE:+x}<reference>" && rm -rf libraries` took the relative `x<reference>` (joined under the session folder) and the rm was an advisory | **DEFECT (measured)** · IN-ARC (regression of FX-G6 / F241, e39853f deny -> 8ed563f advise) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | regression corpus #397: 1 of 432 replayed rows; FX-G6's own allk.txt row | `cwd_lanes`: one lane per value, up to 16 lanes; past 16 a lane takes the value under a configured root (the F241 rule). Cost: `cd "${NOPE:+x}<plain folder>" && rm -rf b` from an X4 folder is now an ADVISORY (the set branch lands under it) |
+| F251 | A work tree named by an ASSIGNMENT in another segment (`export GIT_WORK_TREE=<X4 folder>; git clean -fdx`, `declare -x`, `GIT_DIR=`) reached no wipe rule: `_git_destructive` reads its own segment only | **DEFECT (measured)** · PRE-ARC (allow at e39853f too) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 5 of 5 roots ALLOW from a folder outside every root, in a 3 cwd x 6 root x 12 form matrix where every other spelling ASKS | named ask only (never the bare deny's per-segment pairs), so from an X4 folder it stays the deny; order-blind; PowerShell `$env:GIT_WORK_TREE` not probed |
+| F252 | `git clean`'s dry run was `-n` or a prefix of `--dry-run` ANYWHERE: `-fdx -n --no-dry-run`, `-n --no-d`, `-e -n`, `--exclude -n`, `--e -n`, `-fe -n` delete (MEASURED, git 2.48.1) and were allowed | **DEFECT (measured)** · PRE-ARC (allow at e39853f) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 6 of 6 spellings x 2 forms allowed, now ask (`-C`) / deny (bare) | the last of `-n`/`--dry-run`/`--no-dry-run` wins; `-e`/`--exclude`/`--pathspec-from-file` consume a value; `--` ends options; a long prefix counts only when unambiguous among git clean's 14 long spellings. A clustered `-fdxn` is still NOT read as a dry run (false positive only) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9544,3 +9547,39 @@ to the bash loader (3 of 16 probe spellings disagreed). **Fix:** a `::` beyond e
 bash loader already found none, so it is unchanged. **RE-DERIVED BY:** the spelling table in
 `tests/test_config_precedence_agrees.py` (+7 rows) and `test_FXG6_a_further_stream_suffix_names_NO_config`.
 
+## F250 — a `cd` with several possible targets judged by one · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (FX-G7, the 432-row regression corpus replayed e39853f vs 8ed563f, row #397).** F241
+made `cwd_track` take, of a `cd` target's values, the first that landed under ANY configured root.
+From the toolkit, `cd "${NOPE:+x}<reference>"` has the values `x<reference>` (relative: joined
+under the toolkit, a root) and `<reference>`; the first won and `rm -rf libraries` was judged in
+the toolkit -- an advisory where e39853f denied. One chosen value is the wrong shape whatever the
+rule: the strictest directory depends on the operand judged. **Fix:** `cwd_lanes` keeps one lane
+per value (each with its own pushd stack); facts() judges every segment once per lane, pairing the
+seeded and unseeded walks lane for lane (lanes split per VALUE, which does not depend on the
+base). Bounded at 16 lanes; past it a lane takes the root-landing value. Probed: `cd`, `pushd`,
+`cd` in `bash -c` and `eval`, a second relative `cd`, a redirect write, from the toolkit, the game
+and an outside folder. **RE-DERIVED BY:** `test_hook_facts.py` `TestG7EveryCdValueIsALane`.
+
+## F251 — a git work tree named through the environment by another segment · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (FX-G7).** Measured over 3 session folders x 6 targets x 12 spellings: `git -C`, `cd &&`,
+`--work-tree X`, `--work-tree=X`, `--git-dir`+`--work-tree`, a `GIT_WORK_TREE=` prefix and `env
+GIT_WORK_TREE=` all ASK for an X4 folder from every session folder; `export GIT_WORK_TREE=<X4
+folder>; git clean -fdx` was ALLOW from a folder outside every root (e39853f and 8ed563f alike). It
+was DENY from an X4 session folder only because the bare-wipe rule judged the session folder.
+**Not a defect, recorded with it:** e39853f DENIED `--work-tree`/`GIT_WORK_TREE` wipes from the
+toolkit (corpus #208-#212, #306) for the same reason -- it never read the work tree and judged the
+session folder; from an outside folder it ALLOWED them, and from the toolkit it denied
+`--work-tree=<plain folder>` too. 8ed563f's ASK is the `-C` form's verdict. **Fix:** an assigned
+`GIT_WORK_TREE` / `GIT_DIR` (parent) feeds the named-wipe ASK of every wiping git segment, never the
+bare deny's pairs. **RE-DERIVED BY:** `TestG7GitWorkTreeNamedByAnAssignment`.
+
+## F252 — `git clean` dry run read from any `-n` · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (FX-G7).** In a scratch repo (git 2.48.1) `git clean -fdx -n --no-dry-run`, `-n --no-d`,
+`-e -n`, `--exclude -n` and `--e -n` deleted both files; `--d` and `--dry` deleted nothing; `--n` is
+refused as ambiguous. The guard returned "dry run" for any `-n` or prefix of `--dry-run`. **Fix:**
+`_git_clean_dry` -- the last toggle wins, value options consume their value, `--` ends options, and
+`_git_clean_long` accepts a prefix only when it names exactly one of git clean's long options
+(with their `--no-` forms). **RE-DERIVED BY:** `TestG7GitCleanDryRunIsTheLastWord`.
