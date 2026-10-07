@@ -4960,6 +4960,163 @@ class TestK_C1EveryValueOfAnUnknownVariable(unittest.TestCase):
                 self.assertFalse(f["rm_hits_game"] or f["rm_targets_reference"] or f["rm_in_x4_dir"], c)
 
 
+class TestG7EveryCdValueIsALane(unittest.TestCase):
+    """FX-G7 / regression corpus #397 (MEASURED: e39853f deny -> 8ed563f advise): FX-G6 judged a
+    `cd` with several possible targets by ONE value -- the first landing under ANY root. From
+    the toolkit, `cd "${NOPE:+x}<reference>"` took `x<reference>` (relative, so joined under the
+    toolkit, a root) and `rm -rf libraries` was judged in the toolkit. Every value is now a lane
+    and a relative operand is judged against each (cwd_lanes)."""
+    CWDS = (TOOLKIT + "/work", GAME, _ELSEWHERE)
+
+    def test_every_value_of_a_cd_target_anchors_a_relative_operand(self):
+        for c in ('cd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries',
+                  'cd "${NOPE+x}' + REF + '" && ' + D + ' -rf libraries',
+                  'pushd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries',
+                  'cd "${NOPE:+x}' + REF + '" && cd libraries && ' + D + ' -f w.xml',
+                  "bash -c " + Q + 'cd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries' + Q,
+                  "eval " + Q + 'cd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries' + Q):
+            for cwd in self.CWDS:
+                with self.subTest(c=c, cwd=cwd):
+                    self.assertTrue(FC(c, cwd)["rm_targets_reference"], (c, cwd))
+        for cwd in self.CWDS:
+            with self.subTest(cwd=cwd):
+                self.assertTrue(FC('cd "${NOPE:+x}' + REF + '" && echo y > libraries/w.xml',
+                                   cwd)["writes_reference"])
+
+    def test_the_seeded_and_unseeded_walks_have_the_same_lanes(self):
+        c = 'cd "${A:+x}' + REF + '" && pushd "${B-y}' + GAME + '" && popd && ls'
+        seeded = H.cwd_lanes(c, TOOLKIT, seeded=True, roots=ROOTS)
+        bare = H.cwd_lanes(c, roots=ROOTS)
+        self.assertEqual([len(ds) for _s, ds in seeded], [len(ds) for _s, ds in bare])
+        self.assertGreater(len(seeded[-1][1]), 1)
+
+    def test_past_the_lane_bound_a_root_value_is_still_taken(self):
+        saved = H._MAX_CD_LANES
+        H._MAX_CD_LANES = 1
+        try:
+            self.assertTrue(FC('cd "${NOPE:+x}' + REF + '" && ' + D + ' -rf libraries',
+                               _ELSEWHERE)["rm_targets_reference"])
+        finally:
+            H._MAX_CD_LANES = saved
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_an_assigned_variable_is_one_lane(self):
+        """Clause: only an UNASSIGNED variable splits."""
+        c = 'V=1; cd "${V:+x}' + REF + '" && ' + D + ' -rf libraries'
+        for cwd in self.CWDS:
+            with self.subTest(cwd=cwd):
+                self.assertFalse(FC(c, cwd)["rm_targets_reference"])
+        self.assertEqual(len(H.cwd_lanes(c, roots=ROOTS)[-1][1]), 1)
+
+    def test_TWIN_popd_unwinds_every_lane(self):
+        """Clause: each lane keeps its own pushd stack."""
+        self.assertFalse(FC('pushd "${NOPE:+x}' + REF + '" && popd && ' + D + ' -rf libraries',
+                            _ELSEWHERE)["rm_targets_reference"])
+
+    def test_TWIN_a_plain_cd_elsewhere_stays_silent(self):
+        for c in ('cd "C:/work/b" && ' + D + ' -rf build', 'cd "${NOPE:+x}C:/work/b" && ls',
+                  'cd build && ' + D + ' -rf out'):
+            with self.subTest(c=c):
+                f = FC(c, _ELSEWHERE)
+                self.assertFalse(f["rm_targets_reference"] or f["rm_hits_game"] or f["rm_in_x4_dir"], c)
+
+
+class TestG7GitWorkTreeNamedByAnAssignment(unittest.TestCase):
+    """FX-G7 (R2 of the regression corpus). MEASURED over 6 cwds x 6 roots x 12 forms: every
+    spelling of a work tree in the X4 dirs -- `-C`, `cd &&`, `--work-tree X`, `--work-tree=X`,
+    `--git-dir`+`--work-tree`, a `GIT_WORK_TREE=` prefix, `env GIT_WORK_TREE=` -- is the same
+    ASK from every session cwd, except `export GIT_WORK_TREE=<root>; git clean -fdx`: ALLOW
+    from a folder outside every root (e39853f and 8ed563f alike), because the work tree
+    reached git through the environment and _git_destructive read only its own segment."""
+
+    def test_an_exported_work_tree_names_the_folder(self):
+        for c in ('export GIT_WORK_TREE="' + GAME + '"; git clean -fdx',
+                  'declare -x GIT_WORK_TREE="' + GAME + '"; git clean -fdx',
+                  'GIT_WORK_TREE="' + REF + '"; git reset --hard',
+                  'export GIT_DIR="' + GAME + '/.git"; git clean -fdx'):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    def test_every_spelling_gets_the_verdict_of_the_C_form(self):
+        """The -C form is the policy (an ASK: `git_wipes_x4_dir`, never the bare deny) -- and
+        a work tree named any other way gets exactly that from outside every root."""
+        forms = ('git -C "{t}" clean -fdx', 'git --work-tree "{t}" clean -fdx',
+                 'git --work-tree="{t}" clean -fdx', 'GIT_WORK_TREE="{t}" git clean -fdx',
+                 'env GIT_WORK_TREE="{t}" git clean -fdx',
+                 'git --git-dir="{t}/.git" --work-tree="{t}" clean -fdx',
+                 'export GIT_WORK_TREE="{t}"; git clean -fdx')
+        for f in forms:
+            with self.subTest(f=f):
+                r = FC(f.format(t=GAME), _ELSEWHERE)
+                self.assertEqual((r["git_wipes_x4_dir"], r["git_wipe_from_session_dir"]),
+                                 (True, False), f)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_bare_wipe_from_an_x4_dir_keeps_its_deny(self):
+        """Clause: the assignment feeds the named ASK only, never the per-segment pairs."""
+        self.assertTrue(FC('export GIT_WORK_TREE="' + GAME + '"; git clean -fdx', GAME)
+                        ["git_wipe_from_session_dir"])
+
+    def test_TWIN_a_work_tree_outside_every_root_is_silent(self):
+        self.assertFalse(FC('export GIT_WORK_TREE="C:/work/x"; git clean -fdx', _ELSEWHERE)
+                         ["git_wipes_x4_dir"])
+
+    def test_TWIN_only_a_wipe_reads_the_assignment(self):
+        """Clause: `if git_wipes_worktree_targets(s)` -- a status, or a dry run, is not a wipe."""
+        for c in ('export GIT_WORK_TREE="' + GAME + '"; git status',
+                  'export GIT_WORK_TREE="' + GAME + '"; git clean -n -fdx',
+                  'export GIT_WORK_TREE="' + GAME + '"; git reset --soft HEAD~1'):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    def test_TWIN_another_variable_is_not_a_work_tree(self):
+        """Clause: the names GIT_WORK_TREE / GIT_DIR."""
+        self.assertFalse(FC('export GIT_EDITOR="' + GAME + '"; git clean -fdx', _ELSEWHERE)
+                         ["git_wipes_x4_dir"])
+
+
+class TestG7GitCleanDryRunIsTheLastWord(unittest.TestCase):
+    """FX-G7. MEASURED in a scratch repo (git 2.48.1): `git clean -fdx -n --no-dry-run`,
+    `-n --no-d`, `-e -n`, `--exclude -n`, `--e -n` each DELETED both files, while the guard
+    read each as a dry run (`-n` anywhere, or any prefix of --dry-run). `--d` / `--dry` ARE dry
+    runs (deleted nothing) -- an abbreviation git accepts because it prefixes exactly one of
+    git clean's long options."""
+    FACT = "git_wipe_from_session_dir"
+
+    def test_a_later_negation_or_an_exclude_value_is_not_a_dry_run(self):
+        for a in ("-n --no-dry-run", "-n --no-d", "-e -n", "--exclude -n", "--e -n", "-fe -n",
+                  "--pathspec-from-file -n"):
+            c = "git clean -fdx " + a
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, GAME)[self.FACT], c)
+
+    def test_an_abbreviation_is_the_option_only_when_unambiguous(self):
+        self.assertEqual(H._git_clean_long("--d"), "--dry-run")
+        self.assertEqual(H._git_clean_long("--no-d"), "--no-dry-run")
+        self.assertEqual(H._git_clean_long("--e"), "--exclude")
+        for t in ("--n", "--p", "--pathspec-f", "--x", "--", "-n"):
+            with self.subTest(t=t):
+                self.assertIsNone(H._git_clean_long(t), t)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_real_dry_run_stays_allowed(self):
+        for a in ("--d", "--dry", "--dry-run", "-n", "--no-dry-run -n", "--exclude=-n -n",
+                  "-e x -n", "-epat -n"):
+            c = "git clean -fdx " + a
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+
+    def test_TWIN_an_ambiguous_prefix_is_not_a_dry_run(self):
+        """Clause: `len(hits) == 1`. With a second `--d...` option `--d` is refused by git."""
+        saved = H._GIT_CLEAN_LONG_ALL
+        H._GIT_CLEAN_LONG_ALL = saved + ("--dummy",)
+        try:
+            self.assertIsNone(H._git_clean_long("--d"))
+            self.assertTrue(FC("git clean -fdx --d", GAME)[self.FACT])
+        finally:
+            H._GIT_CLEAN_LONG_ALL = saved
+
+
 class TestH6GitConfigFromTheEnvironment(unittest.TestCase):
     """H6 (MEASURED: deletes): git config from the ENVIRONMENT switches requireForce off."""
 

@@ -452,6 +452,19 @@ confusing messages and six cosmetic ones. All are fixed:
   (9) an `X4_CONFIG` with a `::` stream suffix other than exactly one trailing `::$DATA`
   (`x4-paths.env::$DATA/.`) names no config in the tools and `x4doctor`, as in the guards
   (BLIND-SPOTS F241-F249).
+- **Security: three more ways past the guards are closed** (fix lane FX-G7, found by replaying
+  432 earlier probe inputs through the hooks before and after). (1) `cd "${NOPE:+x}<reference>"
+  && rm -rf libraries` was only an advisory after FX-G6 when run from the toolkit or the game
+  folder: a `cd` whose target has several possible values now keeps EVERY resulting directory
+  (also `pushd`, and inside `bash -c` / `eval`) and a relative path is judged against each, the
+  strictest verdict winning; (2) `export GIT_WORK_TREE=<X4 folder>; git clean -fdx` (or
+  `declare -x`, or `GIT_DIR=`) from a folder outside the X4 folders was allowed: it now asks, like
+  every other way of naming the folder (`git -C`, `--work-tree`, a `GIT_WORK_TREE=` prefix);
+  (3) `git clean -fdx -n --no-dry-run`, `-n --no-d`, `-e -n` and `--exclude -n` delete (measured)
+  and were read as dry runs: the last of `-n` / `--dry-run` / `--no-dry-run` now counts, and a
+  `-n` that is the pattern of `-e` / `--exclude` is a pattern. `git clean --dry` / `--d` stay
+  allowed: git takes a long option's prefix only when it names exactly one option
+  (BLIND-SPOTS F250-F252).
 - **A Codex or OpenCode patch run through the shell after `cd $X4_REFERENCE`** (or `$env:...`, or
   any `cd` whose target the shell expands) is refused with a reason; it was judged against the
   literal text `$X4_REFERENCE` and allowed (BLIND-SPOTS F203).
