@@ -37,8 +37,20 @@ def classify(path):
             "reason":"Review required: "+", ".join(hits) if hits else "Review required: no static risk markers"}
 
 
+def normalize_skip(reason):
+    """Canonicalize only this runner's random directory nonce under system temp.
+
+    Retain the parent, source location, error code, relative filename and message.
+    Repr-escaped Windows exceptions can carry several backslashes per separator.
+    """
+    import re
+    parent=r"[\\/]+".join(re.escape(p) for p in re.split(r"[\\/]",tempfile.gettempdir()))
+    return re.sub("("+parent+r"[\\/]+x4-pytest-batch-)[a-z0-9_]{8}(?=[\\/])",
+                  r"\1<SCRATCH>",reason)
+
+
 def outcomes(data):
-    return {node:{phase:{k:v for k,v in row.items() if k!="duration"}
+    return {node:{phase:{k:normalize_skip(v) if k=="skip_reason" else v for k,v in row.items() if k!="duration"}
                   for phase,row in phases.items()} for node,phases in data["tests"].items()}
 
 
@@ -61,7 +73,7 @@ def compare(a,b):
             raise ValueError("incomplete or duplicate test inventory")
     # Pytest skip locations embed per-worker temp paths; retain the actual reason.
     changed=[n for n in sorted(aa.keys()|bb.keys()) if aa.get(n)!=bb.get(n)]
-    ac,bc=a.get("collection_skips",{}),b.get("collection_skips",{})
+    ac,bc=({n:normalize_skip(reason) for n,reason in d.get("collection_skips",{}).items()} for d in (a,b))
     changed += ["collection:"+n for n in sorted(ac.keys()|bc.keys()) if ac.get(n)!=bc.get(n)]
     if a.get("exit")!=b.get("exit"):changed.append("session:exit")
     if a.get("session_errors",[])!=b.get("session_errors",[]):changed.append("session:errors")

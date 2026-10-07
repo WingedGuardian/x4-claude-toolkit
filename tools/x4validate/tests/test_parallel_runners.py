@@ -31,6 +31,21 @@ def test_comparison_is_per_item_and_ignores_only_duration():
     assert batch.compare(a,report("failed"))==["a"]
     b["tests"]["a"]["call"]["skip_reason"]="new exclusion"
     assert batch.compare(a,b)==["a"]
+    import tempfile
+    a=report("skipped");b=report("skipped")
+    root=Path(tempfile.gettempdir())
+    reason="WinError 1314: "+str(root/"x4-pytest-batch-abcdefgh"/"tests"/"precious.lua")
+    # Actual skip messages repr-escape the path inside the OS error.
+    reason=reason.replace("\\","\\\\")
+    a["tests"]["a"]["call"]["skip_reason"]=reason
+    b["tests"]["a"]["call"]["skip_reason"]=reason.replace("abcdefgh","1234_wxy")
+    assert batch.compare(a,b)==[]
+    for changed in (reason.replace("1314","5"),reason.replace("precious.lua","other.lua")):
+        b["tests"]["a"]["call"]["skip_reason"]=changed
+        assert batch.compare(a,b)==["a"]
+    a["tests"]["a"]["call"]["skip_reason"]="/outside/x4-pytest-batch-abcdefgh/target"
+    b["tests"]["a"]["call"]["skip_reason"]="/outside/x4-pytest-batch-1234_wxy/target"
+    assert batch.compare(a,b)==["a"]
 
 
 def test_comparison_refuses_changed_source_missing_or_duplicate_tests():

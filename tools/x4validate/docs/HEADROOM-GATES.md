@@ -38,6 +38,11 @@ guard fixtures under `.claude/backups` would inherit that path's policy exemptio
 `--serial` runs the original monolithic suite. `--compare A/results.json B/results.json`
 compares every collected node, phase outcome, xfail, skip reason and collection skip,
 refusing changed source fingerprints, missing tests and duplicate tests.
+Skip comparison canonicalizes only the random nonce of this runner's directories
+under the current system temp root. It retains error codes, filenames and messages.
+The full serial/parallel run exposed three Windows symlink-privilege skips whose
+messages differed only in those nonces; all remained skips. The correction changes
+comparison only, with positive and negative twins in `tests/test_parallel_runners.py`.
 
 MEASURED sample, 2026-10-07: the same 16 of 261 hook trials took 238.5 / 122.2 /
 71.5 / 55.6 seconds with 1 / 2 / 4 / 8 workers. All 16 trial outcomes matched.
