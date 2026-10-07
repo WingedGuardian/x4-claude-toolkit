@@ -72,6 +72,8 @@ def main():
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--workers",type=int,choices=range(1,9),default=4)
     p.add_argument("--resume",action="store_true")
+    p.add_argument("--through",choices=("vht","pytest"),default="pytest",
+                   help="stop at a stage boundary; vht leaves pytest explicitly pending")
     args=p.parse_args()
     if not os.environ.get("RB_PRESSURE_FILE"):p.error("run through rb.py")
     out=external_output(args.out,ROOT);out.mkdir(parents=True,exist_ok=True)
@@ -83,6 +85,9 @@ def main():
         if state["identity"]!=ident:p.error("checkpoint inputs changed; use a new output directory")
     elif checkpoint.exists():p.error("checkpoint already exists; use --resume or a new output directory")
     for name,cwd,cmd in stages(out,args.workers):
+        if name=="pytest" and args.through=="vht":
+            print("PARTIAL step 1: hook verification complete; pytest not run. Resume without --through vht.")
+            return 0
         prior=state["stages"].get(name)
         if prior and prior["accepted"]:
             if evidence_intact(out,prior):
