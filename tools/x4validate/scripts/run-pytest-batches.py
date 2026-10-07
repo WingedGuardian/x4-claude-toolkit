@@ -18,7 +18,7 @@ import tempfile
 PACKAGE=Path(__file__).resolve().parents[1]
 REPO=PACKAGE.parents[1]
 sys.path.insert(0,str(REPO/"scripts"))
-from gate_support import wait_dispatch, save, source_fingerprint, external_output
+from gate_support import wait_dispatch, save, source_fingerprint, external_output, gate_environment
 
 
 def classify(path):
@@ -42,6 +42,16 @@ def outcomes(data):
                   for phase,row in phases.items()} for node,phases in data["tests"].items()}
 
 
+def skip_ceiling_errors(tests, collection_skips, cap):
+    if cap is None:return []
+    try:limit=int(cap)
+    except ValueError:return ["X4_MAX_SKIPS is not an integer"]
+    count=len(collection_skips)+sum(row["outcome"]=="skipped" and not row.get("wasxfail")
+        for phases in tests.values() for row in phases.values())
+    if limit<0:return ["X4_MAX_SKIPS is negative"]
+    return [f"{count} skips exceeds X4_MAX_SKIPS={limit}"] if count>limit else []
+
+
 def compare(a,b):
     if a["fingerprint"] != b["fingerprint"]:
         raise ValueError("different source fingerprints")
@@ -54,13 +64,14 @@ def compare(a,b):
     ac,bc=a.get("collection_skips",{}),b.get("collection_skips",{})
     changed += ["collection:"+n for n in sorted(ac.keys()|bc.keys()) if ac.get(n)!=bc.get(n)]
     if a.get("exit")!=b.get("exit"):changed.append("session:exit")
+    if a.get("session_errors",[])!=b.get("session_errors",[]):changed.append("session:errors")
     return changed
 
 
 def run_batch(batch, out, number):
     wait_dispatch()
     report=out/f"batch-{number}.json"
-    env=dict(os.environ,PYTHONDONTWRITEBYTECODE="1",PYTHONUTF8="1",X4_BATCH_REPORT=str(report),
+    env=dict(gate_environment(),X4_BATCH_REPORT=str(report),
              PYTHONPATH=str(PACKAGE/"scripts")+os.pathsep+os.environ.get("PYTHONPATH",""))
     # Guard tests interpret path spellings. A report folder such as .claude/backups
     # is policy-exempt, so it must never become the test sandbox's parent.
@@ -146,10 +157,15 @@ def main():
     if not collected or len(collected)!=len(set(collected)) or set(collected)!=set(tests):
         raise RuntimeError("missing or duplicate test executions")
     if source_fingerprint(REPO)!=fingerprint:raise RuntimeError("source changed during verification")
+    errors=skip_ceiling_errors(tests,collection_skips,os.environ.get("X4_MAX_SKIPS"))
+    for r in results:
+        if r["exit"] and not any(row["outcome"]=="failed" for phases in r["tests"].values() for row in phases.values()):
+            errors.append("a batch returned nonzero without a failed test; inspect its log")
+    rc=max([int(bool(errors)),*[r["exit"] for r in results]])
     save(out/"results.json",{"fingerprint":fingerprint,"tests":tests,"collected":sorted(collected),
-         "collection_skips":collection_skips,
-         "exit":max(r["exit"] for r in results),"workers":1 if args.serial else args.workers})
-    return max(r["exit"] for r in results)
+         "collection_skips":collection_skips,"session_errors":errors,
+         "exit":rc,"workers":1 if args.serial else args.workers})
+    return rc
 
 
 if __name__=="__main__":raise SystemExit(main())

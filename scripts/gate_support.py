@@ -32,6 +32,18 @@ def evidence_intact(out, row):
         for name, digest in row["evidence"].items())
 
 
+def gate_environment():
+    """Keep child `bash` lookups on Git Bash, never the Windows WSL stub."""
+    env=dict(os.environ,PYTHONDONTWRITEBYTECODE="1",PYTHONUTF8="1")
+    if os.name=="nt":
+        from gitbash import find_bash
+        bash=find_bash()
+        if not bash:raise RuntimeError("Git Bash is required for these gates")
+        bindir=Path(bash).parent
+        env["PATH"]=os.pathsep.join([str(bindir),str(bindir.parent/"usr"/"bin"),env.get("PATH","")])
+    return env
+
+
 def dispatch_ready():
     p = os.environ.get("RB_PRESSURE_FILE")
     if not p:

@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from gate_support import save, source_fingerprint, wait_dispatch, external_output, evidence_digest, evidence_intact
+from gate_support import save, source_fingerprint, wait_dispatch, external_output, evidence_digest, evidence_intact, gate_environment
 
 ROOT=Path(__file__).resolve().parents[1]
 PKG=ROOT/"tools"/"x4validate"
@@ -64,7 +64,7 @@ def stages(out,workers):
 def pytest_pending_only(path):
     data=json.loads(path.read_text(encoding="utf-8"))
     failed={n for n,phases in data["tests"].items() if any(p["outcome"]=="failed" for p in phases.values())}
-    return failed=={"tests/test_deploy_parity.py::test_the_real_trees"}
+    return not data.get("session_errors") and failed=={"tests/test_deploy_parity.py::test_the_real_trees"}
 
 
 def main():
@@ -93,7 +93,7 @@ def main():
         started=time.monotonic()
         log=out/(name+"-"+str(time.time_ns())+".log")
         with log.open("wb") as stream:
-            rc=subprocess.run(cmd,cwd=cwd,env=dict(os.environ,PYTHONDONTWRITEBYTECODE="1",PYTHONUTF8="1"),
+            rc=subprocess.run(cmd,cwd=cwd,env=gate_environment(),
                               stdout=stream,stderr=subprocess.STDOUT).returncode
         accepted=rc==0; status="passed" if accepted else "failed"
         if name=="pytest" and rc==1:

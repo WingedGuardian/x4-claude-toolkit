@@ -89,3 +89,11 @@ def test_checkpoint_reuse_requires_every_evidence_file(tmp_path):
 def test_reports_cannot_change_the_fingerprinted_tree(tmp_path):
     from gate_support import external_output
     with pytest.raises(ValueError):external_output(tmp_path/"reports",tmp_path)
+
+
+def test_skip_ceiling_is_global_not_per_batch():
+    tests={name:{"call":{"outcome":"skipped","wasxfail":""}} for name in ("a","b")}
+    assert batch.skip_ceiling_errors(tests,{},"1")
+    assert not batch.skip_ceiling_errors(tests,{},"2")
+    assert batch.skip_ceiling_errors(tests,{"module":"missing"},"2")
+    assert batch.skip_ceiling_errors(tests,{},"")
