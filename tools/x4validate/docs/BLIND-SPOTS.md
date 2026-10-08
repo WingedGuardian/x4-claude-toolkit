@@ -339,6 +339,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F258 | Missing generation marker asserted a save load | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | User-confirmed menu capture printed save load; failing regression | Unmarked session is UNKNOWN; counts and new-game detection retained |
 | F259 | Native short-name test assumed TEMP had no aliases | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Windows CI expected RUNNER~1 while actual expansion returned runneradmin; local reproduction | Canonical native fixture independent of the guard; no-op expansion still fails |
 | F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** · ⏳ OPEN | Four Windows audit tests reproduced under short TEMP; six controlled comparison failures | Shared lexical/native comparison repair under verification |
+| F261 | Ubuntu skip ceiling described an older test population | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 4,773 passed, 203 skipped; all 64 added skips attributed against earlier CI | Measured Ubuntu floor plus existing three-test margin; Windows unchanged |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9637,6 +9638,25 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F261 — Stale Ubuntu skip ceiling · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: CI run 37746049392 at fbf5641 ran 4,773 tests successfully and
+skipped 203, with zero failed tests. All 203 exclusions are accounted for:
+156 require Windows semantics or a case-insensitive filesystem; 47 require
+configured X4 data, registry, or deployed copies. The job failed because its
+skip ceiling was 145. Every grouped skip was compared by file and reason against run
+37172347642, which had 139 skips. All 64 added exclusions are Windows-specific:
+bash resolver 7, config spellings 15, UNC 1, installers 24, toolkit binding 1,
+unpack path spellings 4, doctor 9, and NTFS guard 3. Changes in the other
+groups only clarify reasons; their counts are unchanged. The Ubuntu limit is
+now its measured floor plus the existing three-test margin, 206. Windows
+remains 56 pending its own measurement. Residual: runner capabilities and
+test populations can change; the next per-job result remains authoritative.
+
+**NO RE-DERIVATION: external CI observations require the completed per-job
+logs and their grouped skip reasons; an in-repo test cannot establish a hosted
+runner's measured skip population.** Private item receipts retain both runs.
 
 ## F260 — Short-name comparison and provider composition gap · **DEFECT (measured)** · confidence 99% · ⏳ OPEN
 
