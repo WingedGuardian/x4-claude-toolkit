@@ -406,9 +406,11 @@ class _Owner:
 def test_OWNERSHIP_fixture_takes_the_root_when_it_can(tmp_path, monkeypatch):
     o = _Owner(monkeypatch, settable=True)
     own_or_skip(tmp_path, x4refguard, windows=True)
-    assert o.owned and len(o.calls) == 2 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+    assert o.owned and len(o.calls) == 3 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
     # FX-R2: the access the owner change can drop is granted back, so the tree stays removable
-    assert o.calls[1][:4] == ["icacls", str(tmp_path), "/grant", "*S-1-5-21-1-2-3-1001:(OI)(CI)F"]
+    assert o.calls[1][:4] == ["icacls", str(tmp_path), "/reset", "/T"]
+    assert o.calls[2][:4] == ["icacls", str(tmp_path), "/grant", "*S-1-5-21-1-2-3-1001:(OI)(CI)F"]
+    assert "/T" not in o.calls[2], "explicit child grants override inherited protection"
 
 
 def test_OWNERSHIP_fixture_does_not_GRANT_when_the_owner_change_failed(tmp_path, monkeypatch):
@@ -448,6 +450,35 @@ def test_OWNERSHIP_the_real_setowner_command_is_accepted(tmp_path):
     assert os.listdir(d) == ["f.txt"]                     # ... readable ...
     (d / "f.txt").unlink()
     d.rmdir()                                             # ... and removable, no admin
+
+
+@win
+def test_OWNERSHIP_repair_preserves_the_inherited_deny(protected_cleanup, tripwire):
+    """Force the elevated-runner fixture branch even when already the owner.
+
+    Root access must remain repairable without granting explicit child allows
+    that take precedence over the reference guard's inherited deny.
+    """
+    objects = [protected_cleanup, *protected_cleanup.rglob("*")]
+    states = []
+    def snapshot(label):
+        sid, items = x4refguard._acl(objects)
+        states.append((label, [{"node": str(Path(it["path"]).relative_to(protected_cleanup)),
+                               "rules": [{**{k: r.get(k) for k in ("type", "rights", "inherited", "inh", "prop")},
+                                          "user": r.get("sid") == sid} for r in it["rules"]]}
+                              for it in items]))
+    snapshot("before")
+    r = refguard_owner.take_ownership(protected_cleanup, x4refguard)
+    assert r.returncode == 0, r.stdout + r.stderr
+    snapshot("ownership")
+    rc = x4refguard.main(["apply", "--yes"])
+    snapshot("deny")
+    if rc != 0:
+        print(json.dumps(states))
+    assert rc == 0, states
+    report = x4refguard.report(full=True)
+    assert report["state"] == "protected", report
+    assert report["sample_ok"] == report["sampled"]
 
 
 @win

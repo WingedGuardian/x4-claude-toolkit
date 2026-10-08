@@ -1710,12 +1710,32 @@ def _names_target(stderr, tree):
         os.path.normcase(str(Path(tree).resolve()))
 
 
-def test_FXZ_the_apply_hint_RUNS_under_an_exported_X4_REFERENCE(sandbox, tmp_path):
+def _own_hint_tree(sandbox, tmp_path, monkeypatch, tree):
+    """Make only this scratch target meet the real Windows ownership precondition.
+
+    The hint still runs without confirmation and must never apply an ACL deny.
+    Ownership repair uses the same sandboxed fixture as the reference-guard tests.
+    """
+    if os.name != "nt":
+        return
+    import tempfile
+    from refguard_owner import own_or_skip
+
+    assert tmp_path.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
+    assert tree.resolve().is_relative_to(tmp_path.resolve())
+    guard = doc._x4refguard_module(sandbox.ctx())
+    assert guard is not None
+    monkeypatch.setenv(guard.SANDBOX_ENV, str(tmp_path))
+    own_or_skip(tree, guard)
+
+
+def test_FXZ_the_apply_hint_RUNS_under_an_exported_X4_REFERENCE(sandbox, tmp_path, monkeypatch):
     """MEASURED RED at 4d92732: the row printed `python ".../x4refguard.py" apply`, and that
     command, run in the shell the doctor judged, refused "name DIFFERENT roots" (FX-B2) -- the
     doctor judged the exported tree, the bare apply acts on the config's."""
     _mini_toolkit(sandbox)
     alt = _alt_tree(tmp_path)
+    _own_hint_tree(sandbox, tmp_path, monkeypatch, alt)
     env = _clean_env(X4_REFERENCE=alt, CODEX_HOME=sandbox.codex_home)
     row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
     assert row.status == doc.TODO, row
@@ -1727,11 +1747,12 @@ def test_FXZ_the_apply_hint_RUNS_under_an_exported_X4_REFERENCE(sandbox, tmp_pat
         os.path.normcase(str(sandbox.root.resolve())), flags
 
 
-def test_FXZ_the_apply_hint_RUNS_under_a_FOREIGN_X4_CONFIG(sandbox, tmp_path):
+def test_FXZ_the_apply_hint_RUNS_under_a_FOREIGN_X4_CONFIG(sandbox, tmp_path, monkeypatch):
     """Second clause: an inherited X4_CONFIG outside the toolkit refuses every mutating call
     (FX-B3) unless the root is chosen by its flag; --reference lifts it for x4refguard."""
     _mini_toolkit(sandbox)
     alt = _alt_tree(tmp_path)
+    _own_hint_tree(sandbox, tmp_path, monkeypatch, alt)
     foreign = tmp_path / "elsewhere" / "x4-paths.env"
     _env_file(foreign, X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.game, X4_REFERENCE=alt)
     env = _clean_env(X4_CONFIG=foreign, CODEX_HOME=sandbox.codex_home)
@@ -1742,9 +1763,10 @@ def test_FXZ_the_apply_hint_RUNS_under_a_FOREIGN_X4_CONFIG(sandbox, tmp_path):
     assert _names_target(r.stderr, alt), r.stderr
 
 
-def test_FXZ_TWIN_the_apply_hint_with_NOTHING_exported_acts_on_the_config_tree(sandbox, tmp_path):
+def test_FXZ_TWIN_the_apply_hint_with_NOTHING_exported_acts_on_the_config_tree(sandbox, tmp_path, monkeypatch):
     """Control: the flags must not move the target when nothing in the environment does."""
     _mini_toolkit(sandbox)
+    _own_hint_tree(sandbox, tmp_path, monkeypatch, sandbox.ref)
     env = _clean_env(CODEX_HOME=sandbox.codex_home)
     row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
     _flags, r = _run_hint(row.detail, env, tmp_path)

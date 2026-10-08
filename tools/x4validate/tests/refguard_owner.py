@@ -23,7 +23,7 @@ import pytest
 
 
 def take_ownership(root, x4refguard):
-    """`icacls /setowner` this user on `root`, then GRANT this user full control back, both
+    """Set this user as owner, restore inherited scratch ACLs, then grant root access, all
     through x4refguard's sandboxed choke point. Returns the first failing step's result, else
     the last one.
 
@@ -38,7 +38,13 @@ def take_ownership(root, x4refguard):
     first = x4refguard._mutate_run(["icacls", root, "/setowner", "*" + sid, "/C", "/Q"], root)
     if first.returncode != 0:
         return first
-    return x4refguard._mutate_run(["icacls", root, "/grant", "*%s:(OI)(CI)F" % sid, "/T", "/C",
+    # Native observation: /setowner plus a root-only grant still materialised
+    # explicit child allows. Restore these fresh scratch objects' inherited ACLs
+    # before the root grant; never normalise the user's real reference tree.
+    reset = x4refguard._mutate_run(["icacls", root, "/reset", "/T", "/C", "/Q"], root)
+    if reset.returncode != 0:
+        return reset
+    return x4refguard._mutate_run(["icacls", root, "/grant", "*%s:(OI)(CI)F" % sid, "/C",
                                    "/Q"], root)
 
 

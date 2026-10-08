@@ -341,6 +341,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** | Four native audit failures reproduced; 741 unit and 73 audit tests passed | ✅ **FIXED 2026-10-08** — Shared lexical/native comparison; 202 mutants caught; 24,593 historical verdicts unchanged |
 | F261 | Ubuntu skip ceiling described an older test population | **DEFECT (measured)** | 4,773 passed, 203 skipped; all 64 added skips attributed against earlier CI | ✅ **FIXED 2026-10-08** — Measured Ubuntu floor plus existing three-test margin; Windows unchanged |
 | F262 | Cold verification stripped Git metadata and placed conformance under shared /tmp | **DEFECT (measured)** in checkout setup | CI cold suite: four failures and 17 setup errors; main suite passed | ✅ **FIXED 2026-10-08** — Isolated committed-object clone under the test sandbox; cold precondition retained; focused regression controls |
+| F263 | Windows ownership fixtures invalidated inherited protection or skipped its precondition | **DEFECT (measured)** in test setup | CI: 31 partial-protection failures/errors and three foreign-owner hint failures; native reproduction | ✅ **FIXED 2026-10-08** — Normalise fresh scratch ACLs before a root-only grant; owned doctor-hint fixtures; product guard unchanged |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9639,6 +9640,42 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F263 — Ownership-fixture ACL and hint preconditions · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: Windows CI run 37802022931 at 5567db7 had 14 failures and 20
+setup errors, with 4,910 passed and 54 skipped. Every failed/error case is
+attributed: 31 reported partial protection after ownership repair; three
+doctor-hint tests stopped at foreign ownership on the elevated runner.
+The 54 skips remained within the unchanged 56 ceiling.
+
+A native regression forced the ownership-repair branch even when the local
+user already owned the scratch root. It reproduced the same partial result.
+WITHDRAWN: removing /T from the grant alone solves this. The root-only
+variant also failed. Numeric before/after ACL snapshots showed explicit child
+allows appearing during the ownership repair, so the conservative product
+checker correctly refused to certify the inherited deny.
+
+Only the fresh test fixtures change: after setting the owner, reset inherited
+scratch ACLs, then grant inheritable access on the root only. Every operation
+uses x4refguard's sandboxed mutation choke point. Doctor-hint fixtures satisfy
+ownership on their own targets, then still require the unconfirmed hint to
+refuse before applying protection. No real reference ACL or product guard
+source was changed. Microsoft documents /reset as restoring inherited ACLs:
+https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls
+
+MEASURED: 11 focused tests passed without skips. The audited batch runner
+then collected 409 cases across reference-guard, behaviour, doctor, unpack
+and toolkit-binding modules: 406 passed, three real POSIX-chmod exclusions,
+zero failures or session errors. Changed/unreviewed modules remained exclusive;
+four was the requested worker maximum, not four simultaneous test processes.
+Residual: the local regression forces the fixture branch but does not emulate
+the hosted runner's elevated token; a complete new CI run remains required.
+
+RE-DERIVED BY: `tests/test_x4refguard.py`
+`test_OWNERSHIP_repair_preserves_the_inherited_deny`,
+`test_OWNERSHIP_fixture_takes_the_root_when_it_can`, and
+`tests/test_x4doctor.py` doctor-hint tests.
 
 ## F262 — Cold-checkout metadata and sandbox mismatch · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-08
 
