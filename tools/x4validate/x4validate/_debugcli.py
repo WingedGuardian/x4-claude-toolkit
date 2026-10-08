@@ -326,7 +326,7 @@ def triage(log: Path, out=None) -> int:
 
     w(f"x4debug triage  {log}")
     w(f"  captured        : {mtime:%Y-%m-%d %H:%M:%S}  (mtime)")
-    w(f"  session type    : {'NEW GAME (galaxy generated)' if new_game else 'save load'}")
+    w(f"  session type    : {'NEW GAME (galaxy generated)' if new_game else 'UNKNOWN (menu or save load)'}")
     if new_game:
         w("                    god / job / station errors occur only at generation, so")
         w("                    raw counts are NOT comparable with a save-load log")

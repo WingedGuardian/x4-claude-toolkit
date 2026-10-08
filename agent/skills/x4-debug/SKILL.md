@@ -7,8 +7,8 @@ allowed-tools: Read, Bash
 Read the active profile's debug log and report only REAL errors.
 
 **Run the tool first, do not hand-roll the triage.** `uv run --python 3.13 x4debug triage [log]` resolves the log
-the same way this skill does, states its mtime and whether the session was a NEW GAME or a save
-load, and buckets **every** `[=ERROR=]` line by mod, by script, by engine subsystem, and by
+the same way this skill does, states its mtime and whether a NEW GAME marker is present.
+Without that marker the session is UNKNOWN (menu or save load). It buckets **every** `[=ERROR=]` line by mod, by script, by engine subsystem, and by
 unclassified residue. Its rows are required to sum to the lines read.
 
 A hand-rolled `grep | sort | uniq -c` pass cannot tell you what it dropped. That is not a
@@ -65,9 +65,10 @@ cross-check the **Version Migration Map** in KNOWLEDGEBASE.md.
 
 ## Comparing two logs
 
-Check whether each log is a NEW GAME or a save load (`grep -c "Universe generation begins"`). Raw
-error **counts are not comparable across that boundary** — compare per-category presence/absence
-instead.
+Check each log for the NEW GAME marker (`grep -c "Universe generation begins"`). Its absence
+does not prove a save load: menu startup also lacks it. Raw error **counts are not comparable
+between confirmed new games and unmarked sessions** — compare per-category presence/absence
+instead, and retain any independently confirmed session type alongside the log.
 
 ## Reporting
 

@@ -76,6 +76,16 @@ def test_triage_states_the_logs_age_and_whether_it_is_a_new_game(tmp_path, capsy
     assert "captured" in out.lower() or "mtime" in out.lower(), out
 
 
+def test_triage_does_not_infer_a_save_load_from_an_absent_generation_marker(tmp_path, capsys):
+    """Menu-only startup also lacks the marker; absence cannot prove a save load."""
+    text = SAMPLE.replace("[General] 0.00 Universe generation begins", "")
+    assert _debugcli.main(["triage", str(_write(tmp_path, text))]) == 0
+    out = capsys.readouterr().out
+    session = next(line for line in out.splitlines() if "session type" in line)
+    assert "UNKNOWN" in session and "menu" in session and "save load" in session
+    assert "rows 4 == lines read 4: OK" in out
+
+
 def test_triage_attributes_diff_op_failures_to_the_owning_mod(tmp_path, capsys):
     _debugcli.main(["triage", str(_write(tmp_path))])
     out = capsys.readouterr().out

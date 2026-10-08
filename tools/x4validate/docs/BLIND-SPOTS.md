@@ -335,7 +335,8 @@ memory or from another session -- a remembered id was stale within a day here.
 | F254 | Edge sweep's blank environment still discovered the toolkit's private config | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the gate fixture | 5 of 39 cells labelled unconfigured returned configured answers | Explicit empty fixture config; blank-config discovery twin |
 | F255 | Historical replay fingerprint omitted its filesystem parser and PowerShell translator | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 2 of 4 verdict dependencies could change without voiding a replay | Hash all four; mutate each dependency with an unchanged control |
 | F256 | Hygiene counted quoted fixture/prose commands, unrelated status and tests outside project scope | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 630 of 24,778 calls changed; all classified; 3 unsafe controls retained | Shared shell grammar and recorded cwd; matcher fingerprint refuses incompatible baselines |
-| F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08; full replay pending | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | One documented-switch/value parser shared by target and action checks |
+| F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | Shared operand/action parser; 200 mutants caught; 24,593 historical verdicts unchanged |
+| F258 | Missing generation marker asserted a save load | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | User-confirmed menu capture printed save load; failing regression | Unmarked session is UNKNOWN; counts and new-game detection retained |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9635,6 +9636,26 @@ an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
 
+## F258 — An absent generation marker asserted a save load · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: triage called a user-confirmed menu-only startup capture a "save load".
+READ: `_debugcli.triage` selected that label solely when `_is_new_game` was false.
+Absence of the galaxy-generation marker cannot distinguish menu startup from a
+save load. A new regression failed before the label repair. Unmarked sessions
+now render UNKNOWN (menu or save load); confirmed new games retain their label.
+The regression preserves all four error rows in its fixture, and the existing
+new-game test remains the positive control. Parsing, buckets and return codes
+are unchanged. Independently confirmed session provenance remains separate from
+what the tool can establish from the log alone.
+
+MEASURED: 205 debug/parser/generation/register tests passed, zero skipped. On the
+same pinned startup capture, the complete triage output differed only in the
+session-label line; all 330 error rows and every bucket remained identical.
+
+RE-DERIVED BY: `tests/test_debugcli.py`
+`test_triage_does_not_infer_a_save_load_from_an_absent_generation_marker` and
+`test_triage_states_the_logs_age_and_whether_it_is_a_new_game`.
+
 ## F257 — Absolute icacls operands mistaken for switches · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 
 MEASURED: throwaway CI run 37732310081 at 4cc0ccf failed
@@ -9646,7 +9667,7 @@ POSIX/MSYS operands and switch-value handling. Full source unit suite after
 repair: 739 tests, OK; hook E2E: 305 passed, 0 failed, 0 skipped. Comparing
 old/new parser facts over all 24,593 distinct historical inputs changed zero
 facts, including the reference-lift predicate. This is a parser comparison,
-not a Bash verdict replay; the full replay remains pending. Three mutation
+not a Bash verdict replay; full replay results are recorded below. Three mutation
 anchors moved with the repair; two added mutants restore the operand/value bugs.
 
 FOLLOW-UP MEASURED: the deployed ccefcf1 hook's full Bash replay matched all
@@ -9655,8 +9676,12 @@ read-only Git Bash query `icacls.exe /c` processed one C-drive target successful
 therefore the first NAME operand must take precedence over the `/C` switch.
 A native options-first read-only query returned rc 87. The first-operand repair
 passed all 740 source unit tests, including a read-only `/c` control and an
-outside-reference path with a later `/C` switch. Its full replay and mutation
-checks are separate follow-up evidence, pending at this commit.
+outside-reference path with a later `/C` switch. Its follow-up checks at 23c76c1
+caught all 200 mutants with zero coverage gaps across 32 predicates. The fresh
+full eight-worker Bash replay followed by saved-result comparison matched all
+24,593 accepted baseline verdicts: zero changed, added or removed; stderr noise
+zero. The artifact fingerprints matched the deployed hook dependencies, which
+remained stable during execution. The accepted historical baseline was retained.
 
 Targets and modifying actions now share `_icacls_parts`, which recognizes named
 switches and colon modifiers while excluding their values from both sets. A
