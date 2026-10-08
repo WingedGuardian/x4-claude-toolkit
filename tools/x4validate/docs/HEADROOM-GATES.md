@@ -17,6 +17,15 @@ parity tests with zero skips in 606.5 seconds, peaking at 1.63 GiB job memory.
 Use four workers for this selection under a 4 GiB cap; a mixed full-suite peak
 does not establish the peak for eight installer batches starting together.
 
+MEASURED full-gate budgeting on this workstation, 2026-10-08: a 4 GiB cap
+stopped `run-gates.sh --all` in QA. The resumed QA-through-XSD tail completed
+under a 7 GiB cap, with a 6.40 GiB job peak and 7.50 GiB minimum available RAM.
+Use `--cpu 40 --ram 7` for this full sweep on this corpus, subject to admission;
+the 4 GiB pytest budget does not establish QA's memory requirement. The policy
+still reserves 6 GiB available RAM and limits all managed jobs to 8 GiB total.
+The completed tail passed all 13 remaining gates; prior baseline drift and an
+outdated load-order log remained failures/non-answers in the combined receipts.
+
 From the toolkit root, using the installed resource-budget path as RB:
 
 ```
