@@ -9649,6 +9649,15 @@ facts, including the reference-lift predicate. This is a parser comparison,
 not a Bash verdict replay; the full replay remains pending. Three mutation
 anchors moved with the repair; two added mutants restore the operand/value bugs.
 
+FOLLOW-UP MEASURED: the deployed ccefcf1 hook's full Bash replay matched all
+24,593 baseline inputs with zero verdict changes and zero stderr noise. A native
+read-only Git Bash query `icacls.exe /c` processed one C-drive target successfully;
+therefore the first NAME operand must take precedence over the `/C` switch.
+A native options-first read-only query returned rc 87. The first-operand repair
+passed all 740 source unit tests, including a read-only `/c` control and an
+outside-reference path with a later `/C` switch. Its full replay and mutation
+checks are separate follow-up evidence, pending at this commit.
+
 Targets and modifying actions now share `_icacls_parts`, which recognizes named
 switches and colon modifiers while excluding their values from both sets. A
 `/restore/...` pathname cannot impersonate the action; a `/save` value cannot
@@ -9660,7 +9669,8 @@ This does not execute icacls or change a filesystem ACL.
 
 RE-DERIVED BY: `agent/guards/claude-hooks/test_hook_facts.py`
 `test_icacls_absolute_slash_operands_are_paths_not_switches`,
-`test_icacls_switch_values_are_not_target_paths`.
+`test_icacls_switch_values_are_not_target_paths`,
+`test_icacls_drive_operand_is_not_the_continue_switch`.
 
 ## F256 — Hygiene regex matched data and the wrong status · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 

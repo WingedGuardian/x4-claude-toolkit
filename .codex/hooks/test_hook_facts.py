@@ -823,6 +823,12 @@ class TestPreviouslyUnprobedRules(unittest.TestCase):
         for root in (ref, REF):
             self.assertFalse(F('icacls "' + root + '" /save "/restore"', roots=dict(ROOTS, reference=root))["lifts_reference_deny"])
 
+    def test_icacls_drive_operand_is_not_the_continue_switch(self):
+        self.assertTrue(F('icacls /c /reset /T /C')["lifts_reference_deny"])
+        self.assertFalse(F('icacls /c')["lifts_reference_deny"])
+        self.assertFalse(F('icacls C:/tmp/outside /reset /C')["lifts_reference_deny"])
+        self.assertEqual(H._icacls_paths('icacls /c /reset /T /C'), ['/c'])
+
     def test_x4refguard_remove_fires(self):
         for cmd in ("python scripts/x4refguard.py remove",
                     'uv run --no-project python "' + TOOLKIT + '/scripts/x4refguard.py" remove --path "' + REF + '"',

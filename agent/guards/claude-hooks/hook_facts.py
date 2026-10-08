@@ -2214,7 +2214,9 @@ def _icacls_parts(seg: str) -> tuple:
             take -= 1
             continue
         lo = o.lower().split(":", 1)[0]
-        if lo in _ICACLS_SWITCHES:
+        # icacls NAME is the first operand. In Git Bash /c is the C drive;
+        # a later /C remains the continue-on-error switch. Do not discard NAME.
+        if lo in _ICACLS_SWITCHES and out:
             switches.append(lo)
             if lo in _ICACLS_VALUED:
                 take = 2 if lo == "/substitute" else 1
