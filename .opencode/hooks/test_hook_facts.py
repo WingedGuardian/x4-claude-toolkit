@@ -4449,6 +4449,32 @@ class TestG2WindowsPathAliases(unittest.TestCase):
             # TWIN: a path with no `~<digit>` is returned untouched (no syscall)
             self.assertEqual(H.long_name(longdir + "/x"), longdir + "/x")
 
+    def test_short_alias_comparison_peels_prefixes_and_keeps_unknown_tails(self):
+        """Controlled native API oracle: prefix composition and partial paths on every OS."""
+        import ctypes
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        short = "C:/PROGRA~1/Mod"
+        long = "C:/Program Files/Mod"
+        def expand(head, buf, size):
+            if head.replace(BS, "/").lower() != short.lower():
+                return 0
+            buf.value = long
+            return len(long)
+        fake = SimpleNamespace(kernel32=SimpleNamespace(GetLongPathNameW=expand))
+        tail = "/new/$pending"
+        forms = [short, "FileSystem::" + short,
+                 "Microsoft.PowerShell.Core" + BS + "FileSystem::" + short,
+                 BS * 2 + "?" + BS + short,
+                 BS * 2 + "." + BS + short,
+                 "FileSystem::" + BS * 2 + "?" + BS + short]
+        with patch.object(H.os, "name", "nt"), patch.object(ctypes, "windll", fake, create=True):
+            for path in forms:
+                with self.subTest(path=path):
+                    self.assertEqual(H.norm(path + tail), H.norm(long + tail))
+                    self.assertTrue(H.under(path + tail, long))
+                    self.assertFalse(H.under(path + tail, long + "/sibling"))
+
 
 class TestG2SubstitutionInsideArithmetic(unittest.TestCase):
     """FX-G2 item 4 (v4.0.0 delta review): `$((` was stepped over WHOLE, so a substitution

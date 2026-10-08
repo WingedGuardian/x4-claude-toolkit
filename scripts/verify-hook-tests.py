@@ -257,6 +257,16 @@ MUTANTS = [
      "            while i < len(s) and s[i] != \"\\r\":",
      "test_a_comment_keeps_its_newline_which_is_a_separator"),
 
+    # Native prefix composition is tested through a controlled API oracle on every OS.
+    ("comparisons expand short aliases in unresolved stems",
+     "    return _lexical_norm(long_name(p))",
+     "    return _lexical_norm(p)",
+     "test_short_alias_comparison_peels_prefixes_and_keeps_unknown_tails"),
+    ("native alias lookup peels provider and device prefixes",
+     '        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", _lexical_norm(p))',
+     '        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", p.replace(chr(92), "/"))',
+     "test_short_alias_comparison_peels_prefixes_and_keeps_unknown_tails"),
+
     # --- operands resolve against the command's own cwd (2026-09-01) ---------------
     # Each clause gets its OWN mutant. Mutating the whole feature to a no-op cannot
     # distinguish "the join is untested" from "some earlier guard covers it".

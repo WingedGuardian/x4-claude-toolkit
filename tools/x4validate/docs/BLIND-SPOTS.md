@@ -338,6 +338,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | Shared operand/action parser; 200 mutants caught; 24,593 historical verdicts unchanged |
 | F258 | Missing generation marker asserted a save load | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | User-confirmed menu capture printed save load; failing regression | Unmarked session is UNKNOWN; counts and new-game detection retained |
 | F259 | Native short-name test assumed TEMP had no aliases | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Windows CI expected RUNNER~1 while actual expansion returned runneradmin; local reproduction | Canonical native fixture independent of the guard; no-op expansion still fails |
+| F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** · ⏳ OPEN | Four Windows audit tests reproduced under short TEMP; six controlled comparison failures | Shared lexical/native comparison repair under verification |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9636,6 +9637,26 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F260 — Short-name comparison and provider composition gap · **DEFECT (measured)** · confidence 99% · ⏳ OPEN
+
+MEASURED: Windows CI run 37746049392 passed parse-pass tests but failed four audit
+tests. All four reproduced locally with a native short-name temporary base.
+Configured roots were expanded by `main`, while provider-qualified targets,
+unresolved write stems and pipeline targets could retain their short alias.
+The comparison then missed the same protected directory. Six controlled path
+forms failed a new portable API-oracle regression. The shared normalizer now
+expands an existing native prefix for comparisons and peels provider/device
+syntax through the same lexical helper before querying that prefix. Unknown
+suffixes remain unverified; no ACL or operating-system protection is modified.
+All four native audit tests passed after repair; full audit/unit, mutation and
+historical replay verification remain pending. Historical verdict changes are
+expected only for resolvable short-alias comparison paths; every delta must be
+attributed before accepting a changed baseline.
+
+RE-DERIVED BY: `agent/guards/claude-hooks/test_hook_facts.py`
+`test_short_alias_comparison_peels_prefixes_and_keeps_unknown_tails` and
+`agent/guards/claude-hooks/test_audit0924_hooks.py`.
 
 ## F259 — Native short-name test assumed TEMP was already long · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 

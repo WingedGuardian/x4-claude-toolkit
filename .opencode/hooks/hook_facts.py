@@ -18,8 +18,8 @@ Fixing those one predicate at a time meant writing the same parser eight more ti
 This is the "one implementation, asked for by everyone else" rule from CLAUDE.md's
 narrowing-step table, applied to the guards themselves.
 
-Pure functions throughout: no filesystem, no environment, no subprocesses -- with ONE
-deliberate exception. PowerShell text (the PowerShell TOOL's payload, or a
+Most functions are pure. Two deliberate exceptions: Windows 8.3 aliases use
+GetLongPathNameW to verify an existing prefix, and PowerShell text (the PowerShell TOOL's payload, or a
 `powershell -c` / `pwsh -Command` nested in a Bash command) is parsed by PowerShell's
 own parser: `powershell_to_sh` hands it to ps_translate.ps1, which answers "what does
 this do to the filesystem" as an equivalent POSIX-shell command, and that command then
@@ -103,14 +103,16 @@ def long_name(p: str) -> str:
     to the configured root. FX-G2 item 3, MEASURED 2026-10-05: this machine's game root has
     the short form `C:/PROGRA~2/Steam/STEAMA~1/common/X4FOUN~1`, and `rm -rf` of it reached no
     rule (the name backstop reads `x4 foundations`). GetLongPathNameW answers only for a path
-    that EXISTS, so the longest existing prefix is resolved and the rest kept as written.
+    that EXISTS, so the longest existing prefix is resolved and the lexically normalized
+    remainder is retained without claiming it exists. Provider/device prefixes must be
+    peeled before the native query, using the same lexical rules as comparisons.
     One syscall per prefix, and only for a path carrying `~<digit>` on Windows: every other
     path returns at the regex. Any failure returns the path unchanged (today's verdict)."""
     if os.name != "nt" or not p or not _SHORT_NAME.search(p):
         return p
     try:
         import ctypes
-        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", p.replace(chr(92), "/"))
+        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", _lexical_norm(p))
         parts = w.split("/")
         buf = ctypes.create_unicode_buffer(32768)
         for i in range(len(parts), 0, -1):
@@ -125,7 +127,7 @@ def long_name(p: str) -> str:
     return p
 
 
-def norm(p: str) -> str:
+def _lexical_norm(p: str) -> str:
     """Lowercase, backslashes to slashes, drive dialect unified, dot segments resolved.
 
     Windows-to-MSYS is the safe direction: "c:/" is unambiguous, since a colon is
@@ -182,6 +184,16 @@ def norm(p: str) -> str:
     if len(s) > 1:
         s = s.rstrip("/")
     return s
+
+
+def norm(p: str) -> str:
+    """Lexical path form plus verified Windows 8.3 prefix expansion.
+
+    Comparisons see unresolved target stems too; expanding only fully resolved
+    operands leaves those stems unequal to the same expanded configured root.
+    long_name uses _lexical_norm, so prefix peeling never recurses into this call.
+    """
+    return _lexical_norm(long_name(p))
 
 
 def under(path: str, root: str) -> bool:
