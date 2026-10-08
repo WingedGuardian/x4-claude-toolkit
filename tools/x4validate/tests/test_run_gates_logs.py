@@ -68,16 +68,31 @@ _DROP = ("X4_GATE_LOG_DIR", "X4_GAME", "X4_REFERENCE", "X4_TOOLKIT", "X4_CONFIG"
          "X4_GAME_EXTENSIONS", "X4_GAME_ROOT", "X4_PROFILE", "X4_MODS")
 
 
-def _run(tmp_path, root, drop=_DROP, **env_extra):
+def _run(tmp_path, root, drop=_DROP, mode="", **env_extra):
     env = {k: v for k, v in os.environ.items() if k not in drop}
     stub = (tmp_path / "bin").as_posix()
     if os.name == "nt":
         stub = "/" + stub[0].lower() + stub[2:]          # MSYS spelling for Git Bash's PATH
     env["X4_GATES_PATH_PREPEND"] = stub
     env.update(env_extra)
-    r = subprocess.run([_bash(), "-c", 'export PATH="$X4_GATES_PATH_PREPEND:$PATH"; exec bash scripts/run-gates.sh'],
+    r = subprocess.run([_bash(), "-c", 'export PATH="$X4_GATES_PATH_PREPEND:$PATH"; exec bash scripts/run-gates.sh '+mode],
                        cwd=root, capture_output=True, env=env, timeout=120)
     return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
+
+
+def test_all_caps_hook_replay_workers_without_changing_other_gate_arguments(tmp_path):
+    root = _tree(tmp_path)
+    (root / "gates" / "hook_false_positives.py").write_text(
+        "import sys\nassert sys.argv[1:] == ['--workers=8'], sys.argv\nprint('eight workers')\n",
+        encoding="utf-8")
+    (root / "gates" / "aa_ok.py").write_text(
+        "import sys\nassert sys.argv[1:] == [], sys.argv\nprint('unchanged arguments')\n",
+        encoding="utf-8")
+    rc, out, err = _run(tmp_path, root, mode="--all", X4_GATE_LOG_DIR=str(tmp_path / "logs"))
+    assert rc == 1, (rc, out, err)  # the fixture's bb_fail still fails
+    d = _logdir(out)
+    assert (d / "hook_false_positives.log").read_text().strip() == "eight workers"
+    assert (d / "aa_ok.log").read_text().strip() == "unchanged arguments"
 
 
 def _logdir(out: str) -> Path:

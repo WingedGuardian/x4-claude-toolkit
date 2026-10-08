@@ -7,6 +7,15 @@ eight workers. Leave 6 GiB available RAM, 8 GiB available commit and 150 GiB fre
 on C:. Other output drives keep max(20 GiB, 5%). Estimate overruns warn; sustained
 pressure throttles and blocks new batches; emergency floors stop only the job tree.
 The resource tool's `HEADROOM.md` specifies the sample windows and emergency floors.
+`scripts/run-gates.sh --all` explicitly passes `--workers=8` to historical hook
+replay, whose standalone default remains up to 14. Other gate arguments are unchanged.
+The runner invocation is exercised by `tests/test_run_gates_logs.py`.
+
+MEASURED installer-only run, 2026-10-07: eight installer batches hit a 4 GiB job
+cap during startup. Four workers completed all 414 selected installer and deploy
+parity tests with zero skips in 606.5 seconds, peaking at 1.63 GiB job memory.
+Use four workers for this selection under a 4 GiB cap; a mixed full-suite peak
+does not establish the peak for eight installer batches starting together.
 
 From the toolkit root, using the installed resource-budget path as RB:
 
