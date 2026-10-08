@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-r"""Layer 2 for `reference/`: an OS-level protection that holds against EVERY process,
-hooks or no hooks -- and that reports each state as itself, never as "protected" by default.
+r"""Layer 2 for `reference/`: OS-level accidental-write protection for ordinary
+processes, with the privileged exceptions documented below. It reports each
+filesystem state as itself, never as "protected" by default.
 
 WHY. `reference/` is the unpacked base game + DLC: ~510,000 files, a 27 GB re-unpack to
 replace. Until this tool its only protection was the `.unpacked-and-locked` sentinel
@@ -39,6 +40,11 @@ WHAT IT DOES NOT STOP (the honest gaps)
     Claude `ask`, a Codex `.rules` prompt).
   * Windows: an Administrator; changing ACLs/attributes (WRITE_DAC is deliberately not
     denied, so the deny stays removable). POSIX chmod: root, and `chmod u+w` by the owner.
+    MEASURED in hosted scratch diagnostic 37844985751: elevated Git Bash with
+    SeBackupPrivilege/SeRestorePrivilege available overwrote or deleted the tree
+    in three of three probes, even with those rights initially disabled. Removing
+    both rights from a disposable child blocked all three; unprotected controls
+    still worked. The ACL state does not certify safety against those privileges.
 
 USAGE
     python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR] [--reference DIR]
