@@ -101,12 +101,25 @@ def test_data_and_intervening_commands_are_not_hygiene_failures(key, command):
 
 @pytest.mark.parametrize("key,command", [
     ("dollar-question-after-pipe", 'uv run pytest | tail -1; echo "rc=$?"'),
-    ("bare-python-on-project-code", "python -m pytest"),
+    ("bare-python-on-project-code", "cd /repo/tools/x4validate && python -m pytest"),
     ("test-and-commit-in-one-command", "uv run pytest; git commit -m ok"),
 ])
 def test_real_hygiene_failures_still_match(key, command):
     shape = next(s for s in ih.SHAPES if s.key == key)
     assert ih.matches(shape, command)
+
+
+def test_bare_python_respects_the_actual_project_scope_and_cwd():
+    shape = next(s for s in ih.SHAPES if s.key == "bare-python-on-project-code")
+    assert not ih.matches(shape, "python -m pytest hook_tests.py", cwd="/repo/agent/guards/claude-hooks")
+    assert ih.matches(shape, "python -m pytest tests", cwd="/repo/tools/x4validate")
+    assert ih.matches(shape, "cd /repo/tools/x4validate && python -m pytest tests", cwd="/elsewhere")
+    assert not ih.matches(shape, "uv run python -m pytest tests", cwd="/repo/tools/x4validate")
+
+
+def test_bare_python_keeps_the_existing_pytest_only_shape():
+    shape = next(s for s in ih.SHAPES if s.key == "bare-python-on-project-code")
+    assert not ih.matches(shape, "python gates/check.py", cwd="/repo/tools/x4validate")
 
 
 # --------------------------------------------------------------------------

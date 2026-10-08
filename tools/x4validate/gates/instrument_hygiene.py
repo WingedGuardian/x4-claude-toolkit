@@ -121,7 +121,7 @@ SHAPES: list[Shape] = [
           # was flagged as bare: 52 hits where the true count was 2. Caught by
           # SAMPLING the matches rather than trusting the total.
           re.compile(r"^(?:(?!uv run).)*?\bpython3?\s+-m\s+pytest\b", re.S),
-          hits="python -m pytest -q tests/",
+          hits="cd /repo/tools/x4validate && python -m pytest -q tests/",
           misses="cd x && uv run --frozen python -m pytest -q"),
     Shape("test-and-commit-in-one-command",
           "a check that runs in the same breath as the irreversible step cannot stop it",
@@ -174,7 +174,7 @@ def _guard_parser():
     return module
 
 
-def matches(shape: Shape, command: str) -> bool:
+def matches(shape: Shape, command: str, cwd: str = "") -> bool:
     """The three release-failing shapes inspect shell code, not quoted examples.
 
     Other patterns retain their original raw-text scope. These are lower-bound
@@ -187,6 +187,14 @@ def matches(shape: Shape, command: str) -> bool:
     body = parser.strip_comments(parser.strip_heredocs(parser.join_continuations(command)))
     if shape.key == "dollar-question-after-pipe":
         return parser.dollarq_after_pipe(body, parser.assignments(body))
+    if shape.key == "bare-python-on-project-code":
+        assigns = parser.assignments(body)
+        # Keep this gate's original pytest-only shape. The guard also covers
+        # scripts/modules, but expanding that population would change this audit.
+        return any(shape.pattern.search(parser.blank_quoted(segment))
+            and parser._bare_python_targets_project_code(
+            parser.resolve_verb(segment, assigns), directory, assigns)
+            for segment, directory in parser.cwd_track(body, cwd))
     return bool(shape.pattern.search(parser.blank_quoted(body)))
 
 
@@ -198,7 +206,8 @@ def matcher_fingerprint() -> str:
         _env.skip("the shared hygiene grammar changed after it was loaded",
                   "rerun against stable source bytes")
     payload = json.dumps([(s.key, s.pattern.pattern, s.pattern.flags) for s in SHAPES])
-    blob = payload.encode("utf-8") + inspect.getsource(matches).encode("utf-8") + loaded
+    blob = (payload.encode("utf-8") + inspect.getsource(matches).encode("utf-8")
+            + inspect.getsource(scan).encode("utf-8") + loaded)
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -243,7 +252,7 @@ def scan(tdir: Path) -> Census:
                   "pass --transcripts DIR or set X4_TRANSCRIPTS")
     for f in files:
         c.files += 1
-        uses: dict[str, str] = {}
+        uses: dict[str, tuple[str, str]] = {}
         results: dict[str, str] = {}
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
@@ -277,15 +286,16 @@ def scan(tdir: Path) -> Census:
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "tool_use" and b.get("name") == "Bash":
-                    uses[b.get("id", "")] = (b.get("input") or {}).get("command", "")
+                    uses[b.get("id", "")] = ((b.get("input") or {}).get("command", ""),
+                                              rec.get("cwd") or "")
                 elif b.get("type") == "tool_result":
                     results[b.get("tool_use_id", "")] = str(b.get("content", ""))
-        for tid, cmd in uses.items():
+        for tid, (cmd, cwd) in uses.items():
             if not cmd:
                 continue
             c.commands += 1
             for s in SHAPES:
-                if matches(s, cmd):
+                if matches(s, cmd, cwd):
                     c.counts[s.key] = c.counts.get(s.key, 0) + 1
             m = EXIT_CODE.search(results.get(tid, "")[:400])
             if m and m.group(1) != "0":

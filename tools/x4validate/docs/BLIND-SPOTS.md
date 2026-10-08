@@ -334,7 +334,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F253 | Unicode line/paragraph separators shifted AST-indexed justification checks | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the silent-swallow checker | 2 of 2 marker readers in that checker used Unicode-aware splitting | Split on LF after universal-newline reading; marked/unmarked twins |
 | F254 | Edge sweep's blank environment still discovered the toolkit's private config | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the gate fixture | 5 of 39 cells labelled unconfigured returned configured answers | Explicit empty fixture config; blank-config discovery twin |
 | F255 | Historical replay fingerprint omitted its filesystem parser and PowerShell translator | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 2 of 4 verdict dependencies could change without voiding a replay | Hash all four; mutate each dependency with an unchanged control |
-| F256 | Hygiene counted quoted fixture/prose commands and captured status across intervening commands | **DEFECT (measured)** · ✅ FIXED 2026-10-08; historical census pending | 4 of 4 safe probes counted as failures; 3 unsafe controls retained | Shared shell grammar for three patterns; matcher fingerprint refuses incompatible baselines |
+| F256 | Hygiene counted quoted fixture/prose commands, unrelated status and tests outside project scope | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 630 of 24,778 calls changed; all classified; 3 unsafe controls retained | Shared shell grammar and recorded cwd; matcher fingerprint refuses incompatible baselines |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9649,9 +9649,21 @@ outside these lower-bound checks; this is not a full shell execution model.
 The baseline now carries a matcher fingerprint. A missing/different fingerprint
 REFUSES comparison; source changes during the census also refuse. Do not reset the
 historical period merely to remove a red result: re-measure that SAME population
-with the corrected matcher or explicitly accept a new period. Full historical
-re-measurement remains pending machine headroom; synthetic tests are not a corpus
-receipt. RE-DERIVED BY: `tests/test_instrument_hygiene.py`
+with the corrected matcher or explicitly accept a new period.
+
+MEASURED: the frozen 24,778-call census has recorded cwd for every call. The bare
+pytest check now follows the shared guard's project-code scope using that cwd;
+dependency-free hook tests outside that scope are excluded. It retains its
+existing pytest-only population, rather than adding script/module invocations.
+All 630 changed calls were classified. The reconstructed historical prefix of
+10,767 calls reproduces all eight legacy baseline rates; the original baseline
+did not store input identities, so this is reconstruction evidence, not proof of
+the original identity set. Corrected prefix/new-window counts are respectively
+pipeline 124/60, bare project pytest 0/5, and test/commit 61/69 over 10,767/14,011
+calls. The five other patterns are unchanged. Full receipts and the original
+baseline remain private outside git. These are lower-bound shape findings;
+opaque execution and the shared parser's PIPESTATUS suppression remain limits.
+RE-DERIVED BY: `tests/test_instrument_hygiene.py`
 `test_data_and_intervening_commands_are_not_hygiene_failures`,
 `test_real_hygiene_failures_still_match`,
 `test_a_baseline_from_another_matcher_is_not_compared`, and
