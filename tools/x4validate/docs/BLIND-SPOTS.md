@@ -338,7 +338,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | Shared operand/action parser; 200 mutants caught; 24,593 historical verdicts unchanged |
 | F258 | Missing generation marker asserted a save load | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | User-confirmed menu capture printed save load; failing regression | Unmarked session is UNKNOWN; counts and new-game detection retained |
 | F259 | Native short-name test assumed TEMP had no aliases | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Windows CI expected RUNNER~1 while actual expansion returned runneradmin; local reproduction | Canonical native fixture independent of the guard; no-op expansion still fails |
-| F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** · ⏳ OPEN | Four Windows audit tests reproduced under short TEMP; six controlled comparison failures | Shared lexical/native comparison repair under verification |
+| F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Four native audit failures reproduced; 741 unit and 73 audit tests passed | Shared lexical/native comparison; 202 mutants caught; 24,593 historical verdicts unchanged |
 | F261 | Ubuntu skip ceiling described an older test population | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 4,773 passed, 203 skipped; all 64 added skips attributed against earlier CI | Measured Ubuntu floor plus existing three-test margin; Windows unchanged |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
@@ -9658,7 +9658,7 @@ test populations can change; the next per-job result remains authoritative.
 logs and their grouped skip reasons; an in-repo test cannot establish a hosted
 runner's measured skip population.** Private item receipts retain both runs.
 
-## F260 — Short-name comparison and provider composition gap · **DEFECT (measured)** · confidence 99% · ⏳ OPEN
+## F260 — Short-name comparison and provider composition gap · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 
 MEASURED: Windows CI run 37746049392 passed parse-pass tests but failed four audit
 tests. All four reproduced locally with a native short-name temporary base.
@@ -9669,10 +9669,25 @@ forms failed a new portable API-oracle regression. The shared normalizer now
 expands an existing native prefix for comparisons and peels provider/device
 syntax through the same lexical helper before querying that prefix. Unknown
 suffixes remain unverified; no ACL or operating-system protection is modified.
-All four native audit tests passed after repair; full audit/unit, mutation and
-historical replay verification remain pending. Historical verdict changes are
-expected only for resolvable short-alias comparison paths; every delta must be
-attributed before accepting a changed baseline.
+MEASURED after repair: all 741 source unit tests, all 73 native audit tests
+under a verified short-name TEMP ancestor, and 232 focused generation/register/
+gate tests passed, zero skipped. Across 266 verification trials, all 202
+deliberate defects were caught and all 32 predicates had both coverage directions.
+The fresh full four-worker Bash replay matched all 24,593 accepted baseline
+verdicts: zero changed, added or removed; zero stderr noise; runtime/config
+fingerprints stable and matching the deployed copy. The baseline was retained.
+All 24,778 frozen hygiene classifications were unchanged; only its matcher
+fingerprint was rebound after proof, retaining the original baseline period.
+
+The preceding eight-worker artifact had four allow-to-ask changes, each a
+PowerShell analysis non-answer and none carrying a short-name path. Two serial
+repeats of every changed call matched the baseline, followed by the fresh full
+four-worker replay above. Those artifacts remain separate. Contention during
+that run is a plausible cause, not a measured diagnosis of the four non-answers;
+no parser timeout was increased and no result was spliced into an artifact.
+Residual: the native API can fail to resolve a prefix; unresolved suffixes do
+not become evidence that a path exists. The tests establish the listed forms,
+not every filesystem or junction configuration.
 
 RE-DERIVED BY: `agent/guards/claude-hooks/test_hook_facts.py`
 `test_short_alias_comparison_peels_prefixes_and_keeps_unknown_tails` and
