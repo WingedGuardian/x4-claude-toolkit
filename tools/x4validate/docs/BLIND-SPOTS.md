@@ -332,6 +332,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F251 | A work tree named by an ASSIGNMENT in another segment (`export GIT_WORK_TREE=<X4 folder>; git clean -fdx`, `declare -x`, `GIT_DIR=`) reached no wipe rule: `_git_destructive` reads its own segment only | **DEFECT (measured)** · PRE-ARC (allow at e39853f too) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 5 of 5 roots ALLOW from a folder outside every root, in a 3 cwd x 6 root x 12 form matrix where every other spelling ASKS | named ask only (never the bare deny's per-segment pairs), so from an X4 folder it stays the deny; order-blind; PowerShell `$env:GIT_WORK_TREE` not probed |
 | F252 | `git clean`'s dry run was `-n` or a prefix of `--dry-run` ANYWHERE: `-fdx -n --no-dry-run`, `-n --no-d`, `-e -n`, `--exclude -n`, `--e -n`, `-fe -n` delete (MEASURED, git 2.48.1) and were allowed | **DEFECT (measured)** · PRE-ARC (allow at e39853f) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 6 of 6 spellings x 2 forms allowed, now ask (`-C`) / deny (bare) | the last of `-n`/`--dry-run`/`--no-dry-run` wins; `-e`/`--exclude`/`--pathspec-from-file` consume a value; `--` ends options; a long prefix counts only when unambiguous among git clean's 14 long spellings. A clustered `-fdxn` is still NOT read as a dry run (false positive only) |
 | F253 | Unicode line/paragraph separators shifted AST-indexed justification checks | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the silent-swallow checker | 2 of 2 marker readers in that checker used Unicode-aware splitting | Split on LF after universal-newline reading; marked/unmarked twins |
+| F254 | Edge sweep's blank environment still discovered the toolkit's private config | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the gate fixture | 5 of 39 cells labelled unconfigured returned configured answers | Explicit empty fixture config; blank-config discovery twin |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9600,3 +9601,23 @@ READ, open follow-up: `test_no_loose_only_reference_walk.py`, `test_no_packed_on
 and `test_mod_scope_is_explicit.py` also index splitlines output by AST line number.
 Their current findings were not shown to be wrong in this takeover; this closure covers
 the two silent-swallow readers, not every source-location consumer.
+
+## F254 — Unconfigured gate cells discovered the acting toolkit's config · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-07
+
+MEASURED on toolkit 385cf6a: `edge_sweep` passed 34 of 39 cells; five unconfigured
+cells instead resolved real installed data. The gate blanked X4_CONFIG and moved
+CWD, but `_paths._locate_config` treats empty X4_CONFIG as unset and discovers
+the acting toolkit's config through its source location. A read-only subprocess
+probe reproduced that selection with every gate path variable blank; an explicit
+missing-config control resolved neither game nor reference. No config values
+were printed. This is a fixture isolation defect, not evidence that production
+auto-discovery should be removed.
+
+The gate now explicitly selects a real, empty config in its temporary fixture.
+MEASURED after repair: all 39 cells passed, with the five refused calls returning
+2 as originally required; no expected-code sets or production resolver changed.
+RE-DERIVED BY: `tests/test_hook_false_positives_gate.py`
+`test_edge_sweep_empty_config_overrides_self_discovery_with_blank_twin` proves
+explicit empty selection and that blanking the override recreates self discovery.
+`gates/edge_sweep.py` exercises the 39 actual CLI cells; the existing hostile
+exit-code regression in `tests/test_audit0924_gates.py` remains enforced.

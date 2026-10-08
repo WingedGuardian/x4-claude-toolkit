@@ -484,3 +484,30 @@ def test_edge_sweep_blanks_X4_CONFIG_with_the_other_path_vars():
     from conftest import import_gate as _ig
     es = _ig("edge_sweep")
     assert "X4_CONFIG" in es._PATH_VARS
+
+
+def test_edge_sweep_empty_config_overrides_self_discovery_with_blank_twin(tmp_path, monkeypatch):
+    from pathlib import Path
+    from conftest import import_gate as _ig
+    from x4validate import _paths
+    es = _ig("edge_sweep")
+    toolkit = tmp_path / "configured-toolkit"
+    toolkit.mkdir()
+    own = toolkit / "x4-paths.env"
+    own.write_text("X4_GAME=/fictional/game\n", encoding="utf-8")
+    away = tmp_path / "away"
+    away.mkdir()
+    monkeypatch.setattr(_paths, "_SELF", toolkit)
+    monkeypatch.setattr(_paths, "_EXPLICIT", None)
+    env = es.unconfigured_environment(away)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    fixture = Path(env["X4_CONFIG"])
+    assert fixture.is_file() and fixture.read_bytes() == b""
+    assert all(env[k] == "" for k in es._PATH_VARS if k != "X4_CONFIG")
+    assert _paths._find_env_file() == fixture
+    assert _paths.parse_env_report(fixture) == ({}, [])
+    # Blanking X4_CONFIG recreates the leak; automatic self discovery is valid
+    # production behavior and must remain available outside this fixture.
+    monkeypatch.setenv("X4_CONFIG", "")
+    assert _paths._find_env_file() == own

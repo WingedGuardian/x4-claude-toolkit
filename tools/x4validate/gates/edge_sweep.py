@@ -85,6 +85,17 @@ REFUSE = frozenset({2})
 HELP = frozenset({0})
 
 
+def unconfigured_environment(away: Path) -> dict[str, str]:
+    """Empty variables alone still discover the acting toolkit's real config.
+
+    Select a real, empty fixture config explicitly; keep production resolution
+    semantics intact and avoid reading private paths or artifact locations.
+    """
+    config = away / "x4-paths.env"
+    config.write_text("", encoding="utf-8")
+    return {**{k: "" for k in _PATH_VARS}, "X4_CONFIG": str(config)}
+
+
 def check(label: str, argv: list[str], env: dict | None = None,
           cwd: Path | None = None, expect: frozenset = REFUSE) -> tuple[str, str]:
     """A cell passes when it neither crashes nor hangs AND exits within `expect`."""
@@ -177,14 +188,15 @@ def main() -> int:
             ("x4modlist bad subcommand", ["x4modlist", "nosuchcmd"], None, None, REFUSE),
         ]
         # Every tool must survive a fully unconfigured environment — the state a
-        # NEW USER is in. Two things are required and both were missing before:
+        # NEW USER is in. These barriers are required:
         #   * blank every alias in _PATH_VARS, not a subset;
         #   * run from a directory OUTSIDE any toolkit, because
-        #     `_paths._find_env_file()` walks up from CWD and will happily find
-        #     the developer's own `x4-paths.env` otherwise.
-        blank = {k: "" for k in _PATH_VARS}
+        #     a resolver outside the toolkit layout can discover a CWD config;
+        #   * explicitly select an empty fixture config: code in this toolkit
+        #     discovers its own config even from an unrelated CWD (F254).
         away = tmp / "elsewhere"
         away.mkdir()
+        blank = unconfigured_environment(away)
         for t in TOOLS:
             cases.append((f"{t} unconfigured --help", [t, "--help"], blank, away, HELP))
         # --help barely touches resolution; these actually exercise the chain.
