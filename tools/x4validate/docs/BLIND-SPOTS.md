@@ -337,6 +337,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F256 | Hygiene counted quoted fixture/prose commands, unrelated status and tests outside project scope | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 630 of 24,778 calls changed; all classified; 3 unsafe controls retained | Shared shell grammar and recorded cwd; matcher fingerprint refuses incompatible baselines |
 | F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | Shared operand/action parser; 200 mutants caught; 24,593 historical verdicts unchanged |
 | F258 | Missing generation marker asserted a save load | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | User-confirmed menu capture printed save load; failing regression | Unmarked session is UNKNOWN; counts and new-game detection retained |
+| F259 | Native short-name test assumed TEMP had no aliases | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | Windows CI expected RUNNER~1 while actual expansion returned runneradmin; local reproduction | Canonical native fixture independent of the guard; no-op expansion still fails |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9635,6 +9636,27 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F259 — Native short-name test assumed TEMP was already long · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: Windows CI run 37744168461 passed the previously failing icacls suite,
+then failed `test_an_8dot3_short_name_is_its_long_name`. The temporary ancestor
+already used an 8.3 alias. The guard correctly expanded that ancestor, but the
+fixture's expected path retained the alias. A native local reproduction with a
+short-name temporary base failed at the same assertion before repair and passed
+afterward. Disabling `H.long_name` expansion still made the repaired test fail.
+The fixture obtains its long directory independently through GetLongPathNameW,
+checks native API success, and then obtains its short form for the guard probe.
+Production guard bytes and the volume-disabled skip condition are unchanged.
+
+MEASURED: the final fixture deliberately uses the temporary parent's native short
+form, so an alias-capable Windows machine exercises this ancestor case locally.
+All 740 source tests and 142 generation/register tests passed, zero skipped.
+Sealed native controls returned old fixture 1, repaired fixture 0, and disabled
+guard expansion 1; source/test bytes remained stable throughout that check.
+
+RE-DERIVED BY: `agent/guards/claude-hooks/test_hook_facts.py`
+`test_an_8dot3_short_name_is_its_long_name`.
 
 ## F258 — An absent generation marker asserted a save load · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 

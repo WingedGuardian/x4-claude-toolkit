@@ -4424,10 +4424,19 @@ class TestG2WindowsPathAliases(unittest.TestCase):
         import ctypes
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            longdir = os.path.join(td, "A Long Folder Name For Short")
-            os.makedirs(longdir)
             buf = ctypes.create_unicode_buffer(32768)
-            ctypes.windll.kernel32.GetShortPathNameW(longdir, buf, 32768)
+            # Exercise a short-name ancestor even when the caller's TEMP is long.
+            n = ctypes.windll.kernel32.GetShortPathNameW(td, buf, 32768)
+            self.assertTrue(0 < n < 32768, "native temporary parent must resolve")
+            longdir = os.path.join(buf.value, "A Long Folder Name For Short")
+            os.makedirs(longdir)
+            # TEMP itself can carry an 8.3 ancestor (Windows CI uses RUNNER~1).
+            # Obtain the expected LONG fixture independently of H.long_name.
+            n = ctypes.windll.kernel32.GetLongPathNameW(longdir, buf, 32768)
+            self.assertTrue(0 < n < 32768, "native long fixture path must resolve")
+            longdir = buf.value
+            n = ctypes.windll.kernel32.GetShortPathNameW(longdir, buf, 32768)
+            self.assertTrue(0 < n < 32768, "native short fixture path must resolve")
             sdir = buf.value
             if "~" not in os.path.basename(sdir):
                 self.skipTest("8.3 name generation is disabled on this volume")
