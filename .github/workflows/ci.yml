@@ -720,8 +720,10 @@ jobs:
       # registry/game_extensions/reference are all None, which is the load-bearing
       # part and the reason it cannot be replaced by `env -u`.
       #
-      # Linux only: it shells out to `git archive | tar -x` and runs the extracted
-      # tree, and the Windows leg already covers the same suite. If it should gate
+      # Linux only: it clones committed objects with Git metadata into an isolated
+      # checkout and runs there. No private config travels; the cold precondition
+      # still refuses any resolved X4 path. The Windows leg covers the same suite.
+      # If it should gate
       # on Windows too, that is a deliberate widening, not an oversight.
       - name: Cold-clone verification (the check that has lied most)
         if: runner.os == 'Linux'

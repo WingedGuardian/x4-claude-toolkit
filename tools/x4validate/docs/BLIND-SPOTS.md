@@ -340,6 +340,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F259 | Native short-name test assumed TEMP had no aliases | **DEFECT (measured)** | Windows CI expected RUNNER~1 while actual expansion returned runneradmin; local reproduction | ✅ **FIXED 2026-10-08** — Canonical native fixture independent of the guard; no-op expansion still fails |
 | F260 | Short-name roots and target stems used different canonical forms | **DEFECT (measured)** | Four native audit failures reproduced; 741 unit and 73 audit tests passed | ✅ **FIXED 2026-10-08** — Shared lexical/native comparison; 202 mutants caught; 24,593 historical verdicts unchanged |
 | F261 | Ubuntu skip ceiling described an older test population | **DEFECT (measured)** | 4,773 passed, 203 skipped; all 64 added skips attributed against earlier CI | ✅ **FIXED 2026-10-08** — Measured Ubuntu floor plus existing three-test margin; Windows unchanged |
+| F262 | Cold verification stripped Git metadata and placed conformance under shared /tmp | **DEFECT (measured)** in checkout setup | CI cold suite: four failures and 17 setup errors; main suite passed | ✅ **FIXED 2026-10-08** — Isolated committed-object clone under the test sandbox; cold precondition retained; focused regression controls |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9638,6 +9639,32 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F262 — Cold-checkout metadata and sandbox mismatch · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-08
+
+MEASURED: Ubuntu CI run 37802022931 at 5567db7 passed its main suite
+(4,773 passed, 203 skipped, zero failures). Its separate cold suite failed:
+four failures, 17 setup errors, 4,716 passed and 232 skipped. All 17 setup
+errors came from the conformance harness refusing a sandbox under /tmp.
+Three failures queried Git metadata in an archive with no .git; the fourth
+asserted that the neutral conformance directory must not be under system temp.
+
+Cold verification now clones committed objects without shared hardlinks into
+a unique child of the toolkit's existing .test-sandbox. Git metadata and tags
+are available, while untracked private config and virtualenvs are excluded.
+All X4 variables are still cleared. The None|None|None path-resolution
+precondition and the full suite/CLI refusal checks remain mandatory.
+
+MEASURED locally: 51 focused tests passed, zero skipped. The regression runs
+real Git and Bash with a uv seam: selected older tag, ignore/export queries,
+private-config exclusion, neutral location, warm refusal before pytest,
+and unknown-ref refusal. The uncorrected script failed that checkout probe.
+Residual: the seam does not run the full cold suite or prove hosted Linux
+behavior; the next complete CI run must establish those outcomes. This is a
+fresh Git-checkout check, not an assertion about an exported release bundle.
+
+RE-DERIVED BY: `tests/test_verify_cold_checkout.py` and
+`tests/test_cli_enumerations_agree.py`.
 
 ## F261 — Stale Ubuntu skip ceiling · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 

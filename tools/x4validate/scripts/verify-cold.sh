@@ -32,16 +32,24 @@ PKG="$(cd "$HERE/.." && pwd)"
 # root in the development tree and under tools/x4validate/ in the public bundle,
 # and a hardcoded depth silently picks the wrong directory in one of them.
 REPO="$(git -C "$PKG" rev-parse --show-toplevel 2>/dev/null)"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-echo "== extracting a fresh checkout =="
 if [ -z "$REPO" ]; then
   echo "ERROR: $PKG is not inside a git repository; cannot take a clean checkout." >&2
   exit 2
 fi
-git -C "$REPO" archive "${1:-HEAD}" | tar -x -C "$WORK"
-echo "   $(find "$WORK" -type f | wc -l) files -> $WORK"
+# The conformance harness deliberately refuses shared /tmp. Use its existing
+# toolkit-local sandbox convention; each run owns only its unique child.
+mkdir -p "$REPO/.test-sandbox" || exit 2
+RUN_DIR="$(mktemp -d "$REPO/.test-sandbox/cold.XXXXXX")" || exit 2
+trap 'rm -rf "$RUN_DIR"' EXIT
+WORK="$RUN_DIR/checkout"
+
+echo "== cloning a fresh checkout =="
+# Tests query Git's ignore/export rules and historical tags. An archive has no
+# metadata and cannot answer those questions. Clone committed objects only,
+# without shared object hardlinks; ignored config/venvs never travel with it.
+git clone --quiet --no-local --no-checkout "$REPO" "$WORK" || exit 2
+git -C "$WORK" checkout --quiet --detach "${1:-HEAD}" || exit 2
+echo "   $(git -C "$WORK" ls-files | wc -l) tracked files -> $WORK"
 
 # Clear EVERY X4_* var, not a hand-picked few. The one that bites is X4_TOOLKIT.
 UNSET=()
@@ -67,7 +75,7 @@ if [ "$RESOLVED" != "None|None|None" ]; then
   echo "  registry|game_extensions|reference = $RESOLVED" >&2
   echo >&2
   echo "Something is still resolving X4 paths -- most likely \$X4_TOOLKIT, or a" >&2
-  echo "x4-paths.env or a 3.x .claude/x4-paths.env in a PARENT of the temp checkout ($WORK)." >&2
+  echo "x4-paths.env or a 3.x .claude/x4-paths.env resolving for the cold checkout ($WORK)." >&2
   echo "A green result from here would be meaningless, so it is not offered." >&2
   exit 3
 fi
