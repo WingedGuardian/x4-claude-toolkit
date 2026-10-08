@@ -342,6 +342,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F261 | Ubuntu skip ceiling described an older test population | **DEFECT (measured)** | 4,773 passed, 203 skipped; all 64 added skips attributed against earlier CI | ✅ **FIXED 2026-10-08** — Measured Ubuntu floor plus existing three-test margin; Windows unchanged |
 | F262 | Cold verification stripped Git metadata and placed conformance under shared /tmp | **DEFECT (measured)** in checkout setup | CI cold suite: four failures and 17 setup errors; main suite passed | ✅ **FIXED 2026-10-08** — Isolated committed-object clone under the test sandbox; cold precondition retained; focused regression controls |
 | F263 | Windows ownership fixtures invalidated inherited protection or skipped its precondition | **DEFECT (measured)** in test setup | CI: 31 partial-protection failures/errors and three foreign-owner hint failures; native reproduction | ✅ **FIXED 2026-10-08** — Normalise fresh scratch ACLs before a root-only grant; owned doctor-hint fixtures; product guard unchanged |
+| F264 | Git Bash ACL probes ran with administrator backup/restore bypass rights | **DEFECT (measured)** in test context and scope claim | Three newly reachable probes bypassed the deny; removal of both child privileges blocked all three, six controls worked | ✅ **FIXED 2026-10-08** — Disposable child strips only the two bypass privileges; full behavior suite 38/38 on hosted Windows; administrator gap documented |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9641,6 +9642,47 @@ an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
 
+## F264 — Elevated Git Bash bypasses the ACL probe's assumption · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: hosted run 37829869175 at 204842f resolved the previous 34 Windows
+failures/setup errors. It had 4,945 passed, 54 skipped, three failures and zero
+setup errors. Previously unreachable `test_the_deny_STOPS` cases `bash_redirect`,
+`rm_f`, and `rm_rf_tree` reached their assertions and changed protected scratch
+trees. No new skip or skip-ceiling waiver was introduced.
+
+The product already names Windows administrators as a limitation, but its opening
+claim of protection against EVERY process was too broad. A separate scratch-only
+hosted diagnostic, run 37844985751 at 7639f6c, compared the same three commands
+with and without SeBackupPrivilege/SeRestorePrivilege in disposable children:
+12 cases, six of six unprotected controls changed, three of three protected
+privileged probes changed, three of three protected probes without both rights
+were blocked. All 12 children started with both rights available, including after
+earlier children removed them: the launcher retained privilege availability.
+The rights were initially disabled, so merely disabling is not the tested remedy.
+This measurement establishes the pair's effect, not which single right suffices.
+
+Only the three Git Bash test probes change their process context. A disposable
+Python child removes both available privileges with SE_PRIVILEGE_REMOVED, re-reads
+their absence, then runs the original command. This is NOT full unelevation;
+all other token attributes remain unchanged. Every call is confined beneath
+X4_REFGUARD_SANDBOX under the system temporary directory. The child must report
+that it ran; the protected and unprotected disk assertions remain unchanged.
+The parent token and production ACL mechanism are not modified. The product
+docstring now states the measured administrator/Git Bash limitation explicitly.
+
+MEASURED: all 38 behavior/control tests passed locally (zero skips), then all 38
+passed with zero skips on elevated hosted Windows, run 37845999821 at e4dba1f.
+The fixture source tested there is byte-identical to this checkout's helper and
+behavior module. Those diagnostic workflow/script files remain on a separate
+throwaway branch; they are not part of this repair. Full final CI remains pending.
+
+Primary API semantics (removed privileges cannot be re-enabled):
+https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges
+RE-DERIVED BY: `tests/test_x4refguard_behaviour.py` `test_the_deny_STOPS` and
+`test_CONTROL_the_primitive_changes_an_unprotected_tree`, using
+`tests/refguard_bash_probe.py`; the paired disk controls reject a child that did
+not actually execute its probe.
+
 ## F263 — Ownership-fixture ACL and hint preconditions · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 
 MEASURED: Windows CI run 37802022931 at 5567db7 had 14 failures and 20
@@ -9669,8 +9711,9 @@ then collected 409 cases across reference-guard, behaviour, doctor, unpack
 and toolkit-binding modules: 406 passed, three real POSIX-chmod exclusions,
 zero failures or session errors. Changed/unreviewed modules remained exclusive;
 four was the requested worker maximum, not four simultaneous test processes.
-Residual: the local regression forces the fixture branch but does not emulate
-the hosted runner's elevated token; a complete new CI run remains required.
+Follow-up MEASURED: run 37829869175 resolved all 34 preceding failed/error cases.
+Three newly reachable Git Bash behavior probes exposed the separate F264
+administrator-context assumption. A complete final CI run remains required.
 
 RE-DERIVED BY: `tests/test_x4refguard.py`
 `test_OWNERSHIP_repair_preserves_the_inherited_deny`,

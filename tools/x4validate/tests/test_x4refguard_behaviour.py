@@ -40,6 +40,7 @@ from x4validate import _paths  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from refguard_owner import own_or_skip  # noqa: E402
+from refguard_bash_probe import run_probe  # noqa: E402
 
 ORIG = "<wares/>"
 
@@ -55,6 +56,11 @@ def _bash():
     if not b:
         pytest.skip("no Git Bash")
     return b
+
+
+def _bash_probe(root, env, name):
+    _bash()  # retain the existing counted absence of Git Bash
+    return run_probe(root, env, name)
 
 
 def _ps(cmd, env):
@@ -77,13 +83,13 @@ def _cmd(line, env):
 
 #: DELETE / RENAME primitives (the 8 the plan names). Each must leave the tree unchanged.
 DELETES = {
-    "rm_f": lambda t, e: subprocess.run([_bash(), "-c", 'rm -f "$T/libraries/wares.xml"'], env=e, capture_output=True),
+    "rm_f": lambda t, e: _bash_probe(t, e, "rm_f"),
     "remove_item": lambda t, e: _ps('Remove-Item -Force -LiteralPath "$env:T\\libraries\\wares.xml"', e),
     "del_fq": lambda t, e: _cmd('cmd /c del /f /q "%T%\\libraries\\wares.xml"', e),
     "os_remove": lambda t, e: _try(os.remove, t / "libraries" / "wares.xml"),
     "rename": lambda t, e: _try(os.rename, t / "libraries" / "wares.xml", t / "libraries" / "moved.xml"),
     "cat_force": lambda t, e: _ps('Remove-Item -Force -LiteralPath "$env:T\\01.cat"', e),
-    "rm_rf_tree": lambda t, e: subprocess.run([_bash(), "-c", 'rm -rf "$T/libraries"'], env=e, capture_output=True),
+    "rm_rf_tree": lambda t, e: _bash_probe(t, e, "rm_rf_tree"),
     "ri_recurse": lambda t, e: _ps('Remove-Item -Recurse -Force -LiteralPath "$env:T\\libraries"', e),
 }
 
@@ -96,7 +102,7 @@ WRITES = {
     "copy2_over": lambda t, e: _try(shutil.copy2, t / "01.cat", t / "libraries" / "wares.xml"),
     "copy_item_force": lambda t, e: _ps('Copy-Item -Force -LiteralPath "$env:T\\01.cat" '
                                         '-Destination "$env:T\\libraries\\wares.xml"', e),
-    "bash_redirect": lambda t, e: subprocess.run([_bash(), "-c", 'echo x > "$T/libraries/wares.xml"'], env=e, capture_output=True),
+    "bash_redirect": lambda t, e: _bash_probe(t, e, "bash_redirect"),
     "new_file": lambda t, e: _try((t / "libraries" / "new.xml").write_text, "x"),
     "mkdir": lambda t, e: _try(os.mkdir, t / "newdir"),
 }
