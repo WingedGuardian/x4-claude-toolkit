@@ -82,7 +82,10 @@ PATH_VARS = ("X4_GAME", "X4_PROFILE", "X4_REFERENCE", "X4_MODS", "X4_TOOLKIT",
 # _x4-env.sh ALSO sources $X4_TOOLKIT/x4-paths.env, else the 3.x
 # $X4_TOOLKIT/.claude/x4-paths.env (Plan 3 lane I). BOTH are hashed, each with an
 # "absent" sentinel, so either appearing, vanishing or changing voids the run.
-HOOK_FILES = ("protect-bash.sh", "_x4-env.sh")
+# The shell delegates filesystem facts to hook_facts.py, including nested
+# PowerShell commands translated by ps_translate.ps1. A change in either can
+# change a Bash verdict without changing either shell file.
+HOOK_FILES = ("protect-bash.sh", "_x4-env.sh", "hook_facts.py", "ps_translate.ps1")
 EXAMPLE_CAP = 25
 
 

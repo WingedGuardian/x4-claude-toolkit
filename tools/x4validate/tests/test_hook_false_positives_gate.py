@@ -14,6 +14,7 @@ tested is everything that turned out to be wrong about the first version
 from __future__ import annotations
 
 import ast
+import re
 
 import pytest
 
@@ -242,9 +243,24 @@ def _cfgs(tk):
     return {"x4-paths.env": tk / "x4-paths.env", ".claude/x4-paths.env": tk / ".claude" / "x4-paths.env"}
 
 
+def _hook_fixture(root):
+    for name in ("protect-bash.sh", "_x4-env.sh", "hook_facts.py", "ps_translate.ps1"):
+        (root / name).write_text("original", encoding="utf-8")
+
+
+@pytest.mark.parametrize("changed", ["protect-bash.sh", "_x4-env.sh",
+                                     "hook_facts.py", "ps_translate.ps1"])
+def test_changing_each_verdict_dependency_voids_the_replay(tmp_path, changed):
+    _hook_fixture(tmp_path)
+    before = hfp.hash_hooks(tmp_path)
+    hfp.assert_stable(before, hfp.hash_hooks(tmp_path))
+    (tmp_path / changed).write_text("changed", encoding="utf-8")
+    with pytest.raises(hfp.UnstableInstrument, match=re.escape(changed)):
+        hfp.assert_stable(before, hfp.hash_hooks(tmp_path))
+
+
 def test_hash_hooks_includes_paths_env_with_absent_sentinel(tmp_path):
-    (tmp_path / "protect-bash.sh").write_text("a")
-    (tmp_path / "_x4-env.sh").write_text("b")
+    _hook_fixture(tmp_path)
     h = hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path))
     assert h["x4-paths.env"] == "absent" and h[".claude/x4-paths.env"] == "absent"
     (tmp_path / "x4-paths.env").write_text("X4_GAME=/g")
@@ -254,8 +270,7 @@ def test_hash_hooks_includes_paths_env_with_absent_sentinel(tmp_path):
 def test_a_LEGACY_config_changing_mid_run_voids_it_too(tmp_path):
     """Plan 3 lane I: the loader reads the root file, else the 3.x one -- either moving
     changes what the hooks resolve, so the run must void if EITHER moves."""
-    (tmp_path / "protect-bash.sh").write_text("a")
-    (tmp_path / "_x4-env.sh").write_text("b")
+    _hook_fixture(tmp_path)
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "x4-paths.env").write_text("X4_GAME=/g")
     before = hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path))

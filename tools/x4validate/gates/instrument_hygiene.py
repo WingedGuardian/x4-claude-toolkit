@@ -12,7 +12,11 @@ already written down in those files, and one had been CITED an hour before being
 repeated. So the count has to come from a program: the self-report is produced by
 the same faculty that made the mistakes.
 
-⚠ THIS IS A LOWER BOUND AND SAYS SO. It counts SHAPES a regex can see. A wrong
+⚠ THIS IS A LOWER BOUND AND SAYS SO. Five patterns retain their raw-regex scope;
+the three release-failing patterns now use the shared shell grammar to exclude
+quoted examples, comments and data heredocs, and to follow pipeline status only
+to the next command. Opaque programs and unresolved executable names are not
+parsed. A wrong
 population, a vacuous comparison, or a number transcribed instead of derived are
 all invisible here. A falling count is evidence; a zero is not a clean bill.
 
@@ -39,6 +43,10 @@ never asserted in a doc that can rot.
 
     uv run python gates/instrument_hygiene.py [--record] [--transcripts DIR]
 
+Baseline rates carry a matcher fingerprint. A different matcher must re-measure
+the SAME historical population; --record accepts a new period and is not a fix
+for old history. Never compare old regex rates against grammar-aware counts.
+
 Exit: 0 clean (or recorded) - 1 a shape got worse or appeared - 2 cannot run, or
       nothing got worse but some transcript input was UNREADABLE (a clean verdict over
       a denominator with a hole in it is not clean; AUDIT-2026-09-24 GT-6). A finding
@@ -48,11 +56,15 @@ Exit: 0 clean (or recorded) - 1 a shape got worse or appeared - 2 cannot run, or
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib.util
+import inspect
 import re
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from functools import cache
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
@@ -147,6 +159,49 @@ SHAPES: list[Shape] = [
 ]
 
 
+@cache
+def _guard_parser():
+    """Use the toolkit's shell grammar; don't invent another quote/heredoc parser."""
+    path = ROOT.parents[1] / "agent/guards/claude-hooks/hook_facts.py"
+    if not path.is_file():
+        _env.skip("no shared shell grammar for the hygiene census",
+                  "run this maintainer gate from the toolkit checkout")
+    spec = importlib.util.spec_from_file_location("_hygiene_guard_parser", path)
+    module = importlib.util.module_from_spec(spec)
+    # Read committed source bytes directly: stale .pyc is not a grammar baseline.
+    module._hygiene_source_bytes = path.read_bytes()
+    exec(compile(module._hygiene_source_bytes, str(path), "exec"), module.__dict__)
+    return module
+
+
+def matches(shape: Shape, command: str) -> bool:
+    """The three release-failing shapes inspect shell code, not quoted examples.
+
+    Other patterns retain their original raw-text scope. These are lower-bound
+    shell checks: opaque programs and unresolved executable names are not parsed.
+    """
+    if shape.key not in {"dollar-question-after-pipe", "bare-python-on-project-code",
+                         "test-and-commit-in-one-command"}:
+        return bool(shape.pattern.search(command))
+    parser = _guard_parser()
+    body = parser.strip_comments(parser.strip_heredocs(parser.join_continuations(command)))
+    if shape.key == "dollar-question-after-pipe":
+        return parser.dollarq_after_pipe(body, parser.assignments(body))
+    return bool(shape.pattern.search(parser.blank_quoted(body)))
+
+
+def matcher_fingerprint() -> str:
+    """Old regex rates cannot be compared with grammar-aware counts."""
+    grammar = ROOT.parents[1] / "agent/guards/claude-hooks/hook_facts.py"
+    loaded = _guard_parser()._hygiene_source_bytes
+    if grammar.read_bytes() != loaded:
+        _env.skip("the shared hygiene grammar changed after it was loaded",
+                  "rerun against stable source bytes")
+    payload = json.dumps([(s.key, s.pattern.pattern, s.pattern.flags) for s in SHAPES])
+    blob = payload.encode("utf-8") + inspect.getsource(matches).encode("utf-8") + loaded
+    return hashlib.sha256(blob).hexdigest()
+
+
 def verify_fixtures(shapes: list[Shape] | None = None) -> list[str]:
     """Prove every pattern is LIVE before any count is produced.
 
@@ -157,9 +212,9 @@ def verify_fixtures(shapes: list[Shape] | None = None) -> list[str]:
     """
     bad = []
     for s in (shapes if shapes is not None else SHAPES):
-        if not s.pattern.search(s.hits):
+        if not matches(s, s.hits):
             bad.append(f"{s.key}: does NOT match its known-bad example -- pattern is inert")
-        if s.pattern.search(s.misses):
+        if matches(s, s.misses):
             bad.append(f"{s.key}: ALSO matches its near-miss -- pattern is too broad")
     return bad
 
@@ -230,7 +285,7 @@ def scan(tdir: Path) -> Census:
                 continue
             c.commands += 1
             for s in SHAPES:
-                if s.pattern.search(cmd):
+                if matches(s, cmd):
                     c.counts[s.key] = c.counts.get(s.key, 0) + 1
             m = EXIT_CODE.search(results.get(tid, "")[:400])
             if m and m.group(1) != "0":
@@ -258,6 +313,7 @@ def _baseline() -> tuple[dict, dict]:
 
 
 def main() -> int:
+    fingerprint = matcher_fingerprint()
     bad = verify_fixtures()
     if bad:
         print("REFUSING: a pattern failed its own fixture, so any count would be "
@@ -268,6 +324,10 @@ def main() -> int:
 
     tdir = transcript_dir()
     c = scan(tdir)
+    if matcher_fingerprint() != fingerprint:
+        print("REFUSING: the hygiene matcher changed during the census; no stable "
+              "comparison or baseline can be produced.", file=sys.stderr)
+        return 2
     if c.commands == 0:
         print("REFUSING: no Bash commands found, so a clean result would prove nothing.",
               file=sys.stderr)
@@ -307,7 +367,8 @@ def main() -> int:
         print(f"      exit {code:3}  {cmd}")
 
     if RECORD:
-        BASELINE.write_text(json.dumps({"rates": rates, "commands": c.commands},
+        BASELINE.write_text(json.dumps({"rates": rates, "commands": c.commands,
+                                       "matcher_fingerprint": fingerprint},
                                        indent=2, sort_keys=True) + chr(10),
                             encoding="utf-8")
         print("")
@@ -321,6 +382,13 @@ def main() -> int:
         # rc 2, never 0: run-gates.sh buckets 0 as `ok` and discards stdout, so a gate
         # that compared nothing would read as a passing one on every fresh clone
         # (review, 2026-09-14; claude_md_budget and hook_false_positives already refuse).
+        return 2
+
+    if base_meta.get("matcher_fingerprint") != fingerprint:
+        print("REFUSING: the baseline used a different or unrecorded matcher; raw-regex "
+              "rates cannot be compared with shell-grammar counts. Re-measure the "
+              "SAME baseline population before comparing, or explicitly accept a new "
+              "period with --record.", file=sys.stderr)
         return 2
 
     # INCREMENTAL, not cumulative. The corpus is append-only, so a lifetime average's

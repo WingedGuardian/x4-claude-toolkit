@@ -88,6 +88,27 @@ def test_the_bare_python_rule_does_not_flag_a_uv_run_invocation():
         assert not s.pattern.search(exonerated), exonerated
 
 
+@pytest.mark.parametrize("key,command", [
+    ("dollar-question-after-pipe", "sha256sum x | head -1; uv run pytest > out; rc=$?"),
+    ("bare-python-on-project-code", "python - <<'EOF'\nexample = 'python -m pytest'\nEOF"),
+    ("test-and-commit-in-one-command", "git commit -m 'pytest passed earlier'"),
+    ("test-and-commit-in-one-command", "cat > example.txt <<'EOF'\npytest; git commit\nEOF"),
+])
+def test_data_and_intervening_commands_are_not_hygiene_failures(key, command):
+    shape = next(s for s in ih.SHAPES if s.key == key)
+    assert not ih.matches(shape, command)
+
+
+@pytest.mark.parametrize("key,command", [
+    ("dollar-question-after-pipe", 'uv run pytest | tail -1; echo "rc=$?"'),
+    ("bare-python-on-project-code", "python -m pytest"),
+    ("test-and-commit-in-one-command", "uv run pytest; git commit -m ok"),
+])
+def test_real_hygiene_failures_still_match(key, command):
+    shape = next(s for s in ih.SHAPES if s.key == key)
+    assert ih.matches(shape, command)
+
+
 # --------------------------------------------------------------------------
 # scanning: absence, non-answer and a real reading are three different states
 # --------------------------------------------------------------------------
@@ -224,7 +245,8 @@ def _one_command_run(tmp_path, monkeypatch, extra_lines: str = ""):
     (t / "s.jsonl").write_text(_rec("echo hi") + NL + _res("hi") + NL + extra_lines,
                                encoding="utf-8")
     b = tmp_path / "b.json"
-    b.write_text(json.dumps({"rates": {s.key: 0.0 for s in ih.SHAPES}, "commands": 1}),
+    b.write_text(json.dumps({"rates": {s.key: 0.0 for s in ih.SHAPES}, "commands": 1,
+                            "matcher_fingerprint": ih.matcher_fingerprint()}),
                  encoding="utf-8")
     monkeypatch.setattr(ih, "transcript_dir", lambda: t)
     monkeypatch.setattr(ih, "BASELINE", b)
@@ -281,3 +303,22 @@ def test_a_half_written_last_line_in_an_OLD_transcript_is_unreadable(tmp_path, m
     assert ih.main() == 2
     c = ih.scan(tmp_path / "t")
     assert c.partial_tail == [] and c.unreadable, (c.partial_tail, c.unreadable)
+
+
+def test_a_baseline_from_another_matcher_is_not_compared(tmp_path, monkeypatch, capsys):
+    _one_command_run(tmp_path, monkeypatch)
+    assert ih.main() == 0
+    capsys.readouterr()
+    baseline = json.loads(ih.BASELINE.read_text(encoding="utf-8"))
+    baseline.pop("matcher_fingerprint")
+    ih.BASELINE.write_text(json.dumps(baseline), encoding="utf-8")
+    assert ih.main() == 2
+    assert "different or unrecorded matcher" in capsys.readouterr().err
+
+
+def test_a_matcher_changed_during_the_scan_voids_the_reading(tmp_path, monkeypatch, capsys):
+    _one_command_run(tmp_path, monkeypatch)
+    values = iter(["before", "after"])
+    monkeypatch.setattr(ih, "matcher_fingerprint", lambda: next(values))
+    assert ih.main() == 2
+    assert "changed during the census" in capsys.readouterr().err

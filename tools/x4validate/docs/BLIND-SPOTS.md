@@ -333,6 +333,8 @@ memory or from another session -- a remembered id was stale within a day here.
 | F252 | `git clean`'s dry run was `-n` or a prefix of `--dry-run` ANYWHERE: `-fdx -n --no-dry-run`, `-n --no-d`, `-e -n`, `--exclude -n`, `--e -n`, `-fe -n` delete (MEASURED, git 2.48.1) and were allowed | **DEFECT (measured)** · PRE-ARC (allow at e39853f) · ✅ FIXED 2026-10-06 (fix lane FX-G7) | 6 of 6 spellings x 2 forms allowed, now ask (`-C`) / deny (bare) | the last of `-n`/`--dry-run`/`--no-dry-run` wins; `-e`/`--exclude`/`--pathspec-from-file` consume a value; `--` ends options; a long prefix counts only when unambiguous among git clean's 14 long spellings. A clustered `-fdxn` is still NOT read as a dry run (false positive only) |
 | F253 | Unicode line/paragraph separators shifted AST-indexed justification checks | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the silent-swallow checker | 2 of 2 marker readers in that checker used Unicode-aware splitting | Split on LF after universal-newline reading; marked/unmarked twins |
 | F254 | Edge sweep's blank environment still discovered the toolkit's private config | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the gate fixture | 5 of 39 cells labelled unconfigured returned configured answers | Explicit empty fixture config; blank-config discovery twin |
+| F255 | Historical replay fingerprint omitted its filesystem parser and PowerShell translator | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 2 of 4 verdict dependencies could change without voiding a replay | Hash all four; mutate each dependency with an unchanged control |
+| F256 | Hygiene counted quoted fixture/prose commands and captured status across intervening commands | **DEFECT (measured)** · ✅ FIXED 2026-10-08; historical census pending | 4 of 4 safe probes counted as failures; 3 unsafe controls retained | Shared shell grammar for three patterns; matcher fingerprint refuses incompatible baselines |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9621,3 +9623,36 @@ RE-DERIVED BY: `tests/test_hook_false_positives_gate.py`
 explicit empty selection and that blanking the override recreates self discovery.
 `gates/edge_sweep.py` exercises the 39 actual CLI cells; the existing hostile
 exit-code regression in `tests/test_audit0924_gates.py` remains enforced.
+
+## F255 — Replay stability omitted verdict dependencies · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+READ: `protect-bash.sh` invokes `hook_facts.py`, which invokes `ps_translate.ps1`
+for PowerShell carriers inside Bash. The replay hashed only the two shell files.
+MEASURED: changing each of four dependency fixtures voided only two of four readings;
+after including the parser and translator, all four changes void the reading, and
+an unchanged control passes. No hook policy changed. Old receipts lack these two
+fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
+`tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F256 — Hygiene regex matched data and the wrong status · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: four safe probes were counted as hygiene failures: a correctly captured
+test status after an earlier, unrelated pipeline; Python source containing a pytest
+example; a git commit message mentioning an earlier pytest run; and a data heredoc
+containing test/commit text. These are not evidence of unsafe shell execution.
+The shared guard grammar now strips comments/data heredocs and quoted prose for
+the bare-python and test/commit patterns, and follows pipeline status by command
+boundary. Three real failure controls still count. Five other patterns retain
+their original raw-regex scope. Opaque programs/unresolved executable names remain
+outside these lower-bound checks; this is not a full shell execution model.
+
+The baseline now carries a matcher fingerprint. A missing/different fingerprint
+REFUSES comparison; source changes during the census also refuse. Do not reset the
+historical period merely to remove a red result: re-measure that SAME population
+with the corrected matcher or explicitly accept a new period. Full historical
+re-measurement remains pending machine headroom; synthetic tests are not a corpus
+receipt. RE-DERIVED BY: `tests/test_instrument_hygiene.py`
+`test_data_and_intervening_commands_are_not_hygiene_failures`,
+`test_real_hygiene_failures_still_match`,
+`test_a_baseline_from_another_matcher_is_not_compared`, and
+`test_a_matcher_changed_during_the_scan_voids_the_reading`.
