@@ -2169,13 +2169,14 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
     # explicit /grant overrides the INHERITED deny (x4refguard's own _child_ok says so),
     # /inheritance:r strips it, /setowner hands the object to someone who may rewrite it,
     # /restore and /substitute rewrite ACLs wholesale. /deny (applying) and a read are not lifts.
-    if not any(t.startswith(_ICACLS_LIFTS) for t in toks):
+    paths, switches = _icacls_parts(seg)
+    if not any(t in _ICACLS_LIFTS for t in switches):
         return False
-    recursive = "/t" in toks
+    recursive = "/t" in switches
     # /restore applies a saved ACL file to paths UNDER the folder named: an ancestor of
     # reference/ reaches it without /T.
-    walks = recursive or any(t.startswith("/restore") for t in toks)
-    for rv in (rv for o_ in _icacls_paths(seg) for rv in resolve_variants(o_, assigns)):
+    walks = recursive or "/restore" in switches
+    for rv in (rv for o_ in paths for rv in resolve_variants(o_, assigns)):
         r = join_cwd(cwd, subst_root_var(rv, roots))      # every value: FX-G6 / K C1
         if under(r, ref) or (walks and contains_root(r, ref)):
             return True
@@ -2190,30 +2191,43 @@ def _refguard_action(args: list) -> str:
 
 #: icacls switches that change an ACL in a way that can lift a deny (E7), and those that take
 #: a VALUE -- a trustee:perm spec or a file -- which is not a path the ACL is applied to.
-_ICACLS_LIFTS = ("/remove", "/reset", "/grant", "/inheritance", "/restore", "/setowner",
+_ICACLS_LIFTS = ("/remove", "/reset", "/grant", "/inheritance", "/inheritancelevel", "/restore", "/setowner",
                  "/substitute")
 _ICACLS_VALUED = ("/grant", "/deny", "/remove", "/setowner", "/restore", "/save",
-                  "/setintegritylevel", "/substitute")
+                  "/setintegritylevel", "/substitute", "/findsid")
+_ICACLS_SWITCHES = frozenset(_ICACLS_LIFTS + _ICACLS_VALUED
+                            + ("/t", "/c", "/l", "/q", "/verify", "/?"))
 
 
-def _icacls_paths(seg: str) -> list:
-    """The PATH operands of an icacls segment: switches and their values excluded."""
+def _icacls_parts(seg: str) -> tuple:
+    """Paths and documented switches, excluding switch values from BOTH sets.
+
+    A slash-rooted path is not a switch. Colon modifiers belong to the named
+    switch; a slash in a pathname does not. Microsoft icacls syntax is the source
+    for the switch names; /inheritance retains the existing supported spelling.
+    """
     toks = tokens_of(seg)
     k = next((i for i, t in enumerate(toks) if "icacls" in _verb_name(t).lower()), None)
-    out, take = [], 0
+    out, switches, take = [], [], 0
     for o in ([] if k is None else toks[k + 1:]):
         if take:
             take -= 1
             continue
-        lo = o.lower()
-        if lo.startswith("/"):
-            if lo.startswith(_ICACLS_VALUED):
-                take = 2 if lo.startswith("/substitute") else 1
+        lo = o.lower().split(":", 1)[0]
+        if lo in _ICACLS_SWITCHES:
+            switches.append(lo)
+            if lo in _ICACLS_VALUED:
+                take = 2 if lo == "/substitute" else 1
             continue
         if not _drop_redirects([o]):
             continue
         out.append(o)
-    return out
+    return out, switches
+
+
+def _icacls_paths(seg: str) -> list:
+    """The PATH operands of an icacls segment: switches and their values excluded."""
+    return _icacls_parts(seg)[0]
 
 
 def _operands(seg: str) -> list[str]:

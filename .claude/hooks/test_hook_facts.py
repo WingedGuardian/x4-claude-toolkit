@@ -807,6 +807,22 @@ class TestPreviouslyUnprobedRules(unittest.TestCase):
     def test_icacls_reset_recursive_from_an_ANCESTOR_of_reference_fires(self):
         self.assertTrue(F('icacls "C:/Users/tester/Desktop" /reset /T /C')["lifts_reference_deny"])
 
+    def test_icacls_absolute_slash_operands_are_paths_not_switches(self):
+        for ref in ("/home/tester/toolkit/reference", H.norm(REF), "/restore/toolkit/reference"):
+            roots = dict(ROOTS, reference=ref)
+            for action in ("/reset /T /C", "/grant:r user:F", "/remove:d user", "/restore acl.txt"):
+                with self.subTest(ref=ref, action=action):
+                    self.assertTrue(F('icacls "' + ref + '" ' + action, roots=roots)["lifts_reference_deny"])
+            self.assertFalse(F('icacls "' + ref + '"', roots=roots)["lifts_reference_deny"])
+            self.assertFalse(F('icacls "/elsewhere/tree" /reset /T', roots=roots)["lifts_reference_deny"])
+
+    def test_icacls_switch_values_are_not_target_paths(self):
+        ref = "/home/tester/toolkit/reference"
+        self.assertEqual(H._icacls_paths('icacls "/elsewhere/tree" /restore "' + ref + '" /T'), ["/elsewhere/tree"])
+        self.assertEqual(H._icacls_paths('icacls "' + ref + '" /grant:r "user:F" /T /C'), [ref])
+        for root in (ref, REF):
+            self.assertFalse(F('icacls "' + root + '" /save "/restore"', roots=dict(ROOTS, reference=root))["lifts_reference_deny"])
+
     def test_x4refguard_remove_fires(self):
         for cmd in ("python scripts/x4refguard.py remove",
                     'uv run --no-project python "' + TOOLKIT + '/scripts/x4refguard.py" remove --path "' + REF + '"',

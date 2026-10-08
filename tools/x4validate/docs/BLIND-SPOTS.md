@@ -335,6 +335,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F254 | Edge sweep's blank environment still discovered the toolkit's private config | **DEFECT (measured)** · ✅ FIXED 2026-10-07 in the gate fixture | 5 of 39 cells labelled unconfigured returned configured answers | Explicit empty fixture config; blank-config discovery twin |
 | F255 | Historical replay fingerprint omitted its filesystem parser and PowerShell translator | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 2 of 4 verdict dependencies could change without voiding a replay | Hash all four; mutate each dependency with an unchanged control |
 | F256 | Hygiene counted quoted fixture/prose commands, unrelated status and tests outside project scope | **DEFECT (measured)** · ✅ FIXED 2026-10-08 | 630 of 24,778 calls changed; all classified; 3 unsafe controls retained | Shared shell grammar and recorded cwd; matcher fingerprint refuses incompatible baselines |
+| F257 | icacls operand filter discarded absolute slash paths as switches | **DEFECT (measured)** · ✅ FIXED 2026-10-08; full replay pending | Both CI OS jobs failed the same reset probe; 13 new reproduction failures | One documented-switch/value parser shared by target and action checks |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9633,6 +9634,33 @@ after including the parser and translator, all four changes void the reading, an
 an unchanged control passes. No hook policy changed. Old receipts lack these two
 fingerprints and cannot retrospectively prove their stability. RE-DERIVED BY:
 `tests/test_hook_false_positives_gate.py` `test_changing_each_verdict_dependency_voids_the_replay`.
+
+## F257 — Absolute icacls operands mistaken for switches · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
+
+MEASURED: throwaway CI run 37732310081 at 4cc0ccf failed
+`icacls-reset-reference` on both Windows and Ubuntu: wanted ask, got allow.
+The clean checkout's reference path begins with `/`; `_icacls_paths` discarded
+EVERY slash-leading token. Existing unit fixtures used drive-letter paths and
+therefore missed this. New reproduction produced 13 failures across absolute
+POSIX/MSYS operands and switch-value handling. Full source unit suite after
+repair: 739 tests, OK; hook E2E: 305 passed, 0 failed, 0 skipped. Comparing
+old/new parser facts over all 24,593 distinct historical inputs changed zero
+facts, including the reference-lift predicate. This is a parser comparison,
+not a Bash verdict replay; the full replay remains pending. Three mutation
+anchors moved with the repair; two added mutants restore the operand/value bugs.
+
+Targets and modifying actions now share `_icacls_parts`, which recognizes named
+switches and colon modifiers while excluding their values from both sets. A
+`/restore/...` pathname cannot impersonate the action; a `/save` value cannot
+impersonate a `/restore` switch. Ancestor recursion, Windows drive paths, reads,
+and applying a deny retain their existing semantics. Switch names/value arity
+are checked against [Microsoft's icacls syntax](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls);
+the existing `/inheritance` spelling remains supported alongside `/inheritancelevel`.
+This does not execute icacls or change a filesystem ACL.
+
+RE-DERIVED BY: `agent/guards/claude-hooks/test_hook_facts.py`
+`test_icacls_absolute_slash_operands_are_paths_not_switches`,
+`test_icacls_switch_values_are_not_target_paths`.
 
 ## F256 — Hygiene regex matched data and the wrong status · **DEFECT (measured)** · confidence 99% · ✅ FIXED 2026-10-08
 
